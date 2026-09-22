@@ -1,0 +1,61 @@
+{
+  "name": "credkeep",
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.0",
+  "description": "Keep the credentials an automation signs in with: sealed at rest, shared through SSM, every use audited, expiries watched.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.build.json",
+    "prepare": "pnpm build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run src",
+    "lint": "biome check .",
+    "prepublishOnly": "pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ssm": "3.1136.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@types/node": "22.20.3",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wrenautomation/credkeep.git"
+  },
+  "homepage": "https://github.com/wrenautomation/credkeep#readme",
+  "bugs": {
+    "url": "https://github.com/wrenautomation/credkeep/issues"
+  },
+  "keywords": [
+    "credentials",
+    "secrets",
+    "vault",
+    "ssm",
+    "totp",
+    "keychain",
+    "audit"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

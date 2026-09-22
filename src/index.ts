@@ -1,0 +1,74 @@
+export { fileAudit, memoryAudit, type SecretAudit, type SecretUse } from "./audit.js";
+export {
+  type CanaryOptions,
+  CanaryTripped,
+  canaryCredential,
+  canaryStore,
+  isCanary,
+} from "./canary.js";
+export {
+  type Chained,
+  type ChainedFile,
+  chainedFile,
+  rowHash,
+  type Verification,
+  verifyChain,
+} from "./chain.js";
+export {
+  aesGcmCipher,
+  type Cipher,
+  isSealed,
+  type KeychainItem,
+  keychainKey,
+  plainCipher,
+  trustKeychainKey,
+} from "./cipher.js";
+export {
+  type Credential,
+  type CredentialEnvStore,
+  type CredentialInput,
+  type CredentialStore,
+  credentialEnv,
+  credentialEnvName,
+  credentialSchema,
+  type EnvNaming,
+  envCredentials,
+  fileCredentials,
+  layeredCredentials,
+  memoryCredentials,
+  pullCredentials,
+  pushCredentials,
+} from "./credentials.js";
+export {
+  ENV_KEY,
+  type EnvEntry,
+  type EnvListing,
+  type EnvStore,
+  expiring,
+  memoryEnvStore,
+  type PutOptions,
+  parseDotenv,
+  ssmEnvStore,
+  toDotenv,
+  toExports,
+  upsertDotenv,
+} from "./env-store.js";
+export { newPassword } from "./passwords.js";
+export {
+  envSecrets,
+  memorySecrets,
+  type SecretSource,
+  type TrackingSecrets,
+  trackingSecrets,
+} from "./secrets.js";
+export { tailJson, tailLines } from "./tail.js";
+export {
+  base32Decode,
+  findTotpSecret,
+  parseOtpauth,
+  type TotpAlgorithm,
+  type TotpOptions,
+  type TotpParams,
+  totp,
+  totpRemainingMs,
+} from "./totp.js";

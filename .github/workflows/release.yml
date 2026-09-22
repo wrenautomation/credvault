@@ -1,0 +1,36 @@
+# Publish a tagged version to npm with no stored credential: GitHub signs the request
+# and npm checks the signature (trusted publishing), which also attaches provenance.
+#
+# One-time, and only possible once the package exists: on npmjs.com, Package settings →
+# Trusted publisher → this repository and this workflow file. The very first publish is
+# therefore a manual `npm publish --access public`; every one after it is a tag.
+name: release
+on:
+  push: { tags: ["v*"] }
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      # A tag for a version already on npm is history, not a release: stop quietly.
+      - id: published
+        run: |
+          v="$(node -p 'require("./package.json").version')"
+          if npm view "credkeep@$v" version >/dev/null 2>&1; then
+            echo "credkeep@$v is already on npm"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Trusted publishing needs a recent npm; the one bundled with node may predate it.
+      - if: steps.published.outputs.skip != 'true'
+        run: npm install -g npm@latest
+      - if: steps.published.outputs.skip != 'true'
+        run: npm publish --access public
