@@ -37,6 +37,7 @@ export {
   fileCredentials,
   layeredCredentials,
   memoryCredentials,
+  type PushOptions,
   pullCredentials,
   pushCredentials,
   type SharedCredentialStore,
@@ -58,6 +59,13 @@ export {
   toExports,
   upsertDotenv,
 } from "./env-store.js";
+export {
+  type CredentialHistory,
+  type CredentialVersion,
+  changedFields,
+  memoryCredentialHistory,
+  ssmCredentialHistory,
+} from "./history.js";
 export { newPassword } from "./passwords.js";
 export {
   envSecrets,

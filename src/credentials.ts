@@ -10,6 +10,7 @@ import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { type Cipher, isSealed, plainCipher } from "./cipher.js";
+import type { CredentialHistory } from "./history.js";
 
 const expandHome = (p: string) => (p.startsWith("~/") ? `${homedir()}${p.slice(1)}` : p);
 
@@ -252,6 +253,17 @@ export interface CredentialEnvStore {
   /** Names only. With `remove`, a push clears the fields a credential no longer has (used codes, a dropped password). */
   list?(): Promise<{ name: string }[]>;
   remove?(name: string): Promise<boolean>;
+  /** The named entries that exist; with it, a push keeps what the store held before overwriting it. */
+  getMany?(names: string[]): Promise<Record<string, string>>;
+}
+
+export interface PushOptions extends EnvNaming {
+  /**
+   * Where every state of a credential is kept. A push keeps what the store
+   * held, then what it writes: a wrong write is one `get(site, version)` away.
+   * A push that cannot keep the old state writes nothing.
+   */
+  history?: CredentialHistory;
 }
 
 /**
@@ -264,8 +276,9 @@ export async function pushCredentials(
   local: CredentialStore,
   store: CredentialEnvStore,
   sites?: string[],
-  o: EnvNaming = {},
+  o: PushOptions = {},
 ): Promise<{ site: string; names: string[] }[]> {
+  const naming: EnvNaming = o.prefix ? { prefix: o.prefix } : {};
   const chosen = sites?.length ? sites : await local.list();
   const out: { site: string; names: string[] }[] = [];
   const there =
@@ -274,15 +287,21 @@ export async function pushCredentials(
     const cred = await local.get(site);
     if (!cred) throw new Error(`no credential stored here for ${site}`);
     if (cred.canary) continue;
-    const entries = credentialEnv(site, cred, o);
+    if (o.history && store.getMany) {
+      const names = CREDENTIAL_ENV_FIELDS.map((f) => credentialEnvName(site, f, naming));
+      const before = await envCredentials(await store.getMany(names), naming).get(site);
+      if (before) await o.history.keep(site, before);
+    }
+    const entries = credentialEnv(site, cred, naming);
     for (const e of entries) await store.put(e.name, e.value);
     if (there && store.remove) {
       const kept = new Set(entries.map((e) => e.name));
       for (const f of CREDENTIAL_ENV_FIELDS) {
-        const name = credentialEnvName(site, f, o);
+        const name = credentialEnvName(site, f, naming);
         if (there.has(name) && !kept.has(name)) await store.remove(name);
       }
     }
+    await o.history?.keep(site, cred);
     out.push({ site, names: entries.map((e) => e.name) });
   }
   return out;
@@ -357,7 +376,7 @@ export interface SharedCredentialStore extends CredentialEnvStore {
   getMany(names: string[]): Promise<Record<string, string>>;
 }
 
-export interface SyncOptions extends EnvNaming {
+export interface SyncOptions extends PushOptions {
   /** How long a read from the shared store is reused in this process. Default 60s. */
   ttlMs?: number;
   /** A shared read slower than this falls back to the local copy. Default 3s. */
@@ -422,7 +441,10 @@ export function syncedCredentials(
       await local.put(site, cred);
       seen.delete(site);
       try {
-        await pushCredentials(local, shared, [site], naming);
+        await pushCredentials(local, shared, [site], {
+          ...naming,
+          ...(o.history ? { history: o.history } : {}),
+        });
       } catch (err) {
         if (!o.onSharedError) throw err;
         o.onSharedError(site, err, "write");

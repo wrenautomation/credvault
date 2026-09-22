@@ -17,6 +17,7 @@ npm install credvault
 | `envCredentials(env, { prefix })` | The same logins read from env, for containers. Read-only. |
 | `pushCredentials` / `pullCredentials` | Move logins between a laptop and the shared store: every field, passkeys and recovery codes as JSON. Canaries stay put. |
 | `syncedCredentials` | The shared store is the truth, the local file the offline copy: reads ask the shared store (reused 60s, 3s timeout) and refresh the file; writes land in both. No pull chore. |
+| `ssmCredentialHistory(ssm, "/app/config/history")` | Every state a credential has had, one SSM parameter per site, a version per change (SSM keeps 100). Pass it as `history` to a push or `syncedCredentials`: a push keeps what the store held, then what it writes. It never deletes. `versions` names the fields that changed, never values. |
 | `ssmEnvStore(ssm, "/app/config")` | Named values (API keys, tokens), one SSM SecureString each. |
 | `envFileStore("~/.myapp/.env")` | The same, in a local 0600 `.env`. Expiry is a comment above the line. |
 | `put(name, value, { expiresAt })` + `expiring(list, ms)` | Record when a token stops working. List what lapses soon, without decrypting anything. |
@@ -44,6 +45,7 @@ const soon = expiring(await keys.list(), 14 * 86_400_000);
 
 - Values never go into argv, logs or error messages. `list` returns names only.
 - A sealed file opened without its key fails loudly. It never fails as a parse error.
+- A wrong write is undone from history. A push that cannot keep the old state writes nothing.
 - Each app has its own Keychain item, SSM path and env prefix, so two apps never share a secret by accident.
 
 MIT
