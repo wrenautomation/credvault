@@ -136,7 +136,7 @@ describe("ssm store", () => {
 
 describe("env file store", () => {
   it("keeps other lines, writes 0600, and records expiry as a comment above the line", async () => {
-    const file = join(mkdtempSync(join(tmpdir(), "credkeep-")), ".env");
+    const file = join(mkdtempSync(join(tmpdir(), "credvault-")), ".env");
     writeFileSync(file, "# mine\nKEEP=1\nTOKEN=old\n");
     const env: NodeJS.ProcessEnv = {};
     const store = envFileStore(file, env);

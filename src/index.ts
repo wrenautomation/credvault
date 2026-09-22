@@ -24,11 +24,11 @@ export {
   trustKeychainKey,
 } from "./cipher.js";
 export {
+  CREDENTIAL_ENV_FIELDS,
   type Credential,
   type CredentialEnvStore,
   type CredentialInput,
   type CredentialStore,
-  CREDENTIAL_ENV_FIELDS,
   credentialEnv,
   credentialEnvName,
   credentialSchema,

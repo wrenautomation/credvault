@@ -1,11 +1,11 @@
-# credkeep
+# credvault
 
 Keep the credentials an automation signs in with. Sealed at rest, shared through AWS SSM, every use audited, expiries watched.
 
 No browser, no UI. The tool that signs in (a browser agent, a worker) reads from it. The tool that mints tokens writes to it.
 
 ```sh
-npm install credkeep
+npm install credvault
 ```
 
 ## What is in it
@@ -29,7 +29,7 @@ npm install credkeep
 
 ```ts
 import { SSMClient } from "@aws-sdk/client-ssm";
-import { aesGcmCipher, expiring, fileCredentials, keychainKey, ssmEnvStore, totp } from "credkeep";
+import { aesGcmCipher, expiring, fileCredentials, keychainKey, ssmEnvStore, totp } from "credvault";
 
 const logins = fileCredentials("~/.myapp/credentials.json", aesGcmCipher(keychainKey({ service: "myapp" })));
 const github = await logins.get("github");

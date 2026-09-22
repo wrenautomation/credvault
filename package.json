@@ -1,5 +1,5 @@
 {
-  "name": "credkeep",
+  "name": "credvault",
   "version": "0.3.0",
   "packageManager": "pnpm@9.15.0",
   "description": "Keep the credentials an automation signs in with: sealed at rest, shared through SSM, every use audited, expiries watched.",
@@ -40,11 +40,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wrenautomation/credkeep.git"
+    "url": "git+https://github.com/wrenautomation/credvault.git"
   },
-  "homepage": "https://github.com/wrenautomation/credkeep#readme",
+  "homepage": "https://github.com/wrenautomation/credvault#readme",
   "bugs": {
-    "url": "https://github.com/wrenautomation/credkeep/issues"
+    "url": "https://github.com/wrenautomation/credvault/issues"
   },
   "keywords": [
     "credentials",

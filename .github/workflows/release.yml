@@ -26,8 +26,8 @@ jobs:
       - id: published
         run: |
           v="$(node -p 'require("./package.json").version')"
-          if npm view "credkeep@$v" version >/dev/null 2>&1; then
-            echo "credkeep@$v is already on npm"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          if npm view "credvault@$v" version >/dev/null 2>&1; then
+            echo "credvault@$v is already on npm"; echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       # Trusted publishing needs a recent npm; the one bundled with node may predate it.
       - if: steps.published.outputs.skip != 'true'

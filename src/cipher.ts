@@ -25,9 +25,9 @@ export const plainCipher: Cipher = {
   },
 };
 
-const MAGIC = "credkeep-sealed-v1";
+const MAGIC = "credvault-sealed-v1";
 /** Files sealed before the vault left autobrowse: same format, older name. Read, and resealed on the next write. */
-const MAGICS = [MAGIC, "autobrowse-sealed-v1"];
+const MAGICS = [MAGIC, "credkeep-sealed-v1", "autobrowse-sealed-v1"];
 
 /** Sealed text is one JSON line: {magic, iv, tag, data}, all base64. */
 export function aesGcmCipher(key: Buffer): Cipher {
@@ -52,7 +52,7 @@ export function aesGcmCipher(key: Buffer): Cipher {
         data?: string;
       };
       if (!MAGICS.includes(parsed.magic ?? "") || !parsed.iv || !parsed.tag || !parsed.data)
-        throw new Error("the file is not sealed by credkeep");
+        throw new Error("the file is not sealed by credvault");
       const d = createDecipheriv("aes-256-gcm", key, Buffer.from(parsed.iv, "base64"));
       d.setAuthTag(Buffer.from(parsed.tag, "base64"));
       return Buffer.concat([d.update(Buffer.from(parsed.data, "base64")), d.final()]).toString(

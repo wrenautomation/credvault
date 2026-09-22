@@ -6,7 +6,7 @@ import { tailJson, tailLines } from "./tail.js";
 
 describe("tail reads", () => {
   it("reads the last n lines from the file's end across block edges; a torn last line is skipped as JSON", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "credkeep-tail-"));
+    const dir = mkdtempSync(join(tmpdir(), "credvault-tail-"));
     const file = join(dir, "a.jsonl");
     // ~1.5 MB: many 64 KB blocks, so the window starts mid-line.
     const lines = Array.from({ length: 30_000 }, (_, i) =>

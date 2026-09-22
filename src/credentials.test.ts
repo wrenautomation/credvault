@@ -17,7 +17,7 @@ const RFC_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 
 describe("credentials", () => {
   it("file store writes 0600, round-trips, and lists names only", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "credkeep-"));
+    const dir = mkdtempSync(join(tmpdir(), "credvault-"));
     const store = fileCredentials(join(dir, "c.json"));
     await store.put("cloudflare", { username: "u", password: "p", totpSecret: RFC_SECRET });
     expect(statSync(join(dir, "c.json")).mode & 0o777).toBe(0o600);
@@ -201,7 +201,7 @@ describe("sealed credential file", () => {
   it("writes ciphertext, reads it back, and upgrades a plain file on the next write", async () => {
     const { aesGcmCipher, isSealed } = await import("./cipher.js");
     const { readFileSync, writeFileSync } = await import("node:fs");
-    const dir = mkdtempSync(join(tmpdir(), "credkeep-sealed-"));
+    const dir = mkdtempSync(join(tmpdir(), "credvault-sealed-"));
     const file = join(dir, "c.json");
     const key = Buffer.alloc(32, 7);
     writeFileSync(
@@ -223,7 +223,7 @@ describe("sealed credential file", () => {
 
   it("read as plain text, it names the setting instead of a parse error", async () => {
     const { aesGcmCipher } = await import("./cipher.js");
-    const dir = mkdtempSync(join(tmpdir(), "credkeep-sealed-"));
+    const dir = mkdtempSync(join(tmpdir(), "credvault-sealed-"));
     const file = join(dir, "c.json");
     await fileCredentials(file, aesGcmCipher(Buffer.alloc(32, 7))).put("s", {
       username: "u",
@@ -252,19 +252,22 @@ describe("credentials under an app's own prefix", () => {
   });
 });
 
-describe("a file sealed before the rename", () => {
-  it("opens under the old magic and reseals under the new one", async () => {
-    const { aesGcmCipher, isSealed } = await import("./cipher.js");
-    const { readFileSync, writeFileSync } = await import("node:fs");
-    const file = join(mkdtempSync(join(tmpdir(), "credkeep-legacy-")), "c.json");
-    const cipher = aesGcmCipher(Buffer.alloc(32, 3));
-    const plain = JSON.stringify({ sites: { a: { username: "a", password: "p" } } });
-    const legacy = cipher.seal(plain).replace("credkeep-sealed-v1", "autobrowse-sealed-v1");
-    writeFileSync(file, legacy);
-    expect(isSealed(legacy)).toBe(true);
-    const store = fileCredentials(file, cipher);
-    expect((await store.get("a"))?.password).toBe("p");
-    await store.put("b", { username: "b", password: "q" });
-    expect(readFileSync(file, "utf8")).toContain("credkeep-sealed-v1");
-  });
+describe("a file sealed before a rename", () => {
+  it.each(["autobrowse-sealed-v1", "credkeep-sealed-v1"])(
+    "opens under %s and reseals under the new magic",
+    async (old) => {
+      const { aesGcmCipher, isSealed } = await import("./cipher.js");
+      const { readFileSync, writeFileSync } = await import("node:fs");
+      const file = join(mkdtempSync(join(tmpdir(), "credvault-legacy-")), "c.json");
+      const cipher = aesGcmCipher(Buffer.alloc(32, 3));
+      const plain = JSON.stringify({ sites: { a: { username: "a", password: "p" } } });
+      const legacy = cipher.seal(plain).replace("credvault-sealed-v1", old);
+      writeFileSync(file, legacy);
+      expect(isSealed(legacy)).toBe(true);
+      const store = fileCredentials(file, cipher);
+      expect((await store.get("a"))?.password).toBe("p");
+      await store.put("b", { username: "b", password: "q" });
+      expect(readFileSync(file, "utf8")).toContain("credvault-sealed-v1");
+    },
+  );
 });
