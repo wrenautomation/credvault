@@ -28,6 +28,7 @@ export {
   type CredentialEnvStore,
   type CredentialInput,
   type CredentialStore,
+  CREDENTIAL_ENV_FIELDS,
   credentialEnv,
   credentialEnvName,
   credentialSchema,
@@ -36,6 +37,7 @@ export {
   fileCredentials,
   layeredCredentials,
   memoryCredentials,
+  mirroredCredentials,
   pullCredentials,
   pushCredentials,
 } from "./credentials.js";

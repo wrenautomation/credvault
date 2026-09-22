@@ -156,10 +156,30 @@ const USERNAME = "_USERNAME";
 const siteFromEnvName = (s: string): string =>
   s.toLowerCase().replace(/__/g, "@").replace(/_/g, "-");
 
+/** Fields that travel as plain strings, and the list fields that travel as JSON. */
+const STRING_FIELDS = [
+  ["USERNAME", "username"],
+  ["PASSWORD", "password"],
+  ["PREVIOUS_PASSWORD", "previousPassword"],
+  ["TOTP_SECRET", "totpSecret"],
+  ["VIA", "via"],
+  ["CODES_INBOX", "codesInbox"],
+  ["URL", "url"],
+  ["MADE_AT", "madeAt"],
+] as const;
+const JSON_FIELDS = [
+  ["RECOVERY_CODES", "recoveryCodes"],
+  ["PASSKEYS", "passkeys"],
+] as const;
+/** Every env field a credential can use: what a push clears when the credential no longer has it. */
+export const CREDENTIAL_ENV_FIELDS: readonly string[] = [...STRING_FIELDS, ...JSON_FIELDS].map(
+  ([f]) => f,
+);
+
 /**
- * A credential as env entries, for the store the box reads: username,
- * password, TOTP seed, via provider, codes inbox. Recovery codes and
- * passkeys stay on the machine that holds the file.
+ * A credential as env entries, every field of it: the strings as they are,
+ * recovery codes and passkeys as JSON. Empty fields are left out. A
+ * canary's entries are never asked for (see `pushCredentials`).
  */
 export function credentialEnv(
   site: string,
@@ -167,11 +187,11 @@ export function credentialEnv(
   o: EnvNaming = {},
 ): { name: string; value: string }[] {
   const fields: [string, string | undefined][] = [
-    ["USERNAME", cred.username],
-    ["PASSWORD", cred.password],
-    ["TOTP_SECRET", cred.totpSecret],
-    ["VIA", cred.via],
-    ["CODES_INBOX", cred.codesInbox],
+    ...STRING_FIELDS.map(([f, k]): [string, string | undefined] => [f, cred[k]]),
+    ...JSON_FIELDS.map(([f, k]): [string, string | undefined] => [
+      f,
+      cred[k].length ? JSON.stringify(cred[k]) : undefined,
+    ]),
   ];
   return fields
     .filter((f): f is [string, string] => Boolean(f[1]))
@@ -179,8 +199,8 @@ export function credentialEnv(
 }
 
 /**
- * `CRED_<SITE>_USERNAME` / `_PASSWORD` / `_TOTP_SECRET` / `_VIA` /
- * `_CODES_INBOX`: the container form, where a Secret becomes env. Read-only.
+ * `CRED_<SITE>_<FIELD>`: the container form, where a Secret becomes env,
+ * and the shape a pull reads back. Read-only.
  */
 export function envCredentials(
   env: NodeJS.ProcessEnv = process.env,
@@ -191,18 +211,22 @@ export function envCredentials(
   return {
     async get(site) {
       const username = env[key(site, "USERNAME")];
-      const password = env[key(site, "PASSWORD")];
-      const via = env[key(site, "VIA")];
-      if (!username || !(password || via)) return null;
-      const totpSecret = env[key(site, "TOTP_SECRET")];
-      const codesInbox = env[key(site, "CODES_INBOX")];
-      return credentialSchema.parse({
-        username,
-        ...(password ? { password } : {}),
-        ...(totpSecret ? { totpSecret } : {}),
-        ...(via ? { via } : {}),
-        ...(codesInbox ? { codesInbox } : {}),
-      });
+      if (!username || !(env[key(site, "PASSWORD")] || env[key(site, "VIA")])) return null;
+      const out: Record<string, unknown> = {};
+      for (const [f, k] of STRING_FIELDS) {
+        const v = env[key(site, f)];
+        if (v) out[k] = v;
+      }
+      for (const [f, k] of JSON_FIELDS) {
+        const v = env[key(site, f)];
+        if (!v) continue;
+        try {
+          out[k] = JSON.parse(v);
+        } catch {
+          throw new Error(`credentials for ${site}: ${key(site, f)} is not JSON`);
+        }
+      }
+      return credentialSchema.parse(out);
     },
     async put(site) {
       throw new Error(`credentials for ${site}: env store is read-only; set ${key(site, "*")}`);
@@ -224,13 +248,16 @@ export function envCredentials(
 export interface CredentialEnvStore {
   all(): Promise<{ name: string; value: string }[]>;
   put(name: string, value: string): Promise<void>;
+  /** Names only. With `remove`, a push clears the fields a credential no longer has (used codes, a dropped password). */
+  list?(): Promise<{ name: string }[]>;
+  remove?(name: string): Promise<boolean>;
 }
 
 /**
  * This machine's credentials into the env store, every site or the named
- * ones: username, password, TOTP seed, via, codes inbox. Canaries never
- * travel (a tripwire belongs to one machine); passkeys and recovery codes
- * cannot. Answers what was pushed, never a value.
+ * ones, every field (passkeys and recovery codes as JSON). Canaries never
+ * travel: a tripwire belongs to one machine. Answers what was pushed, never
+ * a value.
  */
 export async function pushCredentials(
   local: CredentialStore,
@@ -240,12 +267,21 @@ export async function pushCredentials(
 ): Promise<{ site: string; names: string[] }[]> {
   const chosen = sites?.length ? sites : await local.list();
   const out: { site: string; names: string[] }[] = [];
+  const there =
+    store.list && store.remove ? new Set((await store.list()).map((e) => e.name)) : null;
   for (const site of chosen) {
     const cred = await local.get(site);
     if (!cred) throw new Error(`no credential stored here for ${site}`);
     if (cred.canary) continue;
     const entries = credentialEnv(site, cred, o);
     for (const e of entries) await store.put(e.name, e.value);
+    if (there && store.remove) {
+      const kept = new Set(entries.map((e) => e.name));
+      for (const f of CREDENTIAL_ENV_FIELDS) {
+        const name = credentialEnvName(site, f, o);
+        if (there.has(name) && !kept.has(name)) await store.remove(name);
+      }
+    }
     out.push({ site, names: entries.map((e) => e.name) });
   }
   return out;
@@ -253,9 +289,9 @@ export async function pushCredentials(
 
 /**
  * The env store's credentials into this machine's file, the other way: a
- * second laptop, or a box's file for a passkey site. A site already here is
- * kept unless `overwrite`, and even then its passkeys and recovery codes
- * stay (env never carries them). Answers what was written and what was kept.
+ * new laptop, or a box's file for a passkey site. A site already here is
+ * kept unless `overwrite`, and even then passkeys here are never dropped:
+ * the shared ones join them. Answers what was written and what was kept.
  */
 export async function pullCredentials(
   store: CredentialEnvStore,
@@ -276,10 +312,15 @@ export async function pullCredentials(
       kept.push(site);
       continue;
     }
+    const shared = new Set(cred.passkeys.map((p) => p.credentialId));
     await local.put(site, {
       ...cred,
-      recoveryCodes: here?.recoveryCodes ?? cred.recoveryCodes,
-      passkeys: here?.passkeys ?? cred.passkeys,
+      // A store pushed before codes travelled has none: the ones here stay.
+      recoveryCodes: cred.recoveryCodes.length ? cred.recoveryCodes : (here?.recoveryCodes ?? []),
+      passkeys: [
+        ...cred.passkeys,
+        ...(here?.passkeys ?? []).filter((p) => !shared.has(p.credentialId)),
+      ],
     });
     written.push(site);
   }
@@ -305,6 +346,33 @@ export function layeredCredentials(
     async list() {
       const all = await Promise.all(stores.map((s) => s.list()));
       return [...new Set(all.flat())];
+    },
+  };
+}
+
+/**
+ * `local`, with every write copied to the shared env store: the file on this
+ * machine becomes a cache, and a lost machine loses nothing. The local write
+ * lands first; a failed copy goes to `onMirrorError` (default: throw), and
+ * `pushCredentials` for that site repairs it. Canaries stay local.
+ */
+export function mirroredCredentials(
+  local: CredentialStore,
+  store: CredentialEnvStore,
+  o: EnvNaming & { onMirrorError?: (site: string, err: unknown) => void } = {},
+): CredentialStore {
+  const naming: EnvNaming = o.prefix ? { prefix: o.prefix } : {};
+  return {
+    get: (site) => local.get(site),
+    list: () => local.list(),
+    async put(site, cred) {
+      await local.put(site, cred);
+      try {
+        await pushCredentials(local, store, [site], naming);
+      } catch (err) {
+        if (!o.onMirrorError) throw err;
+        o.onMirrorError(site, err);
+      }
     },
   };
 }

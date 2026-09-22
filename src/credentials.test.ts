@@ -8,6 +8,7 @@ import {
   fileCredentials,
   layeredCredentials,
   memoryCredentials,
+  mirroredCredentials,
   pullCredentials,
   pushCredentials,
 } from "./credentials.js";
@@ -33,6 +34,27 @@ describe("credentials", () => {
     expect(await store.list()).toEqual(["google-admin"]);
     expect((await store.get("google-admin"))?.username).toBe("a@b.co");
     await expect(store.put("x", { username: "u", password: "p" })).rejects.toThrow(/read-only/);
+  });
+  it("every field round-trips through env, lists as JSON", async () => {
+    const cred = {
+      username: "u",
+      password: "p",
+      previousPassword: "old",
+      totpSecret: RFC_SECRET,
+      recoveryCodes: ["r1"],
+      codesInbox: "c@x.co",
+      passkeys: [
+        { rpId: "x", credentialId: "k", privateKey: "d", signCount: 3, isResidentCredential: true },
+      ],
+      via: "google",
+      url: "https://x.co/login",
+      madeAt: "2026-09-22T00:00:00.000Z",
+    };
+    const env = Object.fromEntries(credentialEnv("x", cred).map((e) => [e.name, e.value]));
+    expect(await envCredentials(env).get("x")).toEqual(cred);
+    await expect(envCredentials({ ...env, CRED_X_PASSKEYS: "{" }).get("x")).rejects.toThrow(
+      /CRED_X_PASSKEYS is not JSON/,
+    );
   });
   it("a credential round-trips through env entries, via-only included", async () => {
     const entries = credentialEnv("my-site", {
@@ -65,9 +87,22 @@ describe("credentials", () => {
     expect(await envCredentials(env).list()).toEqual(["google@ops"]);
     expect((await envCredentials(env).get("google@ops"))?.username).toBe("o@x.co");
   });
-  it("push sends every site but canaries; pull keeps what is here unless told, and never drops passkeys", async () => {
+  it("push sends every field but a canary's; pull keeps what is here unless told, and never drops passkeys", async () => {
+    const key = (id: string) => ({
+      rpId: "a",
+      credentialId: id,
+      privateKey: "d",
+      signCount: 0,
+      isResidentCredential: true,
+    });
     const local = memoryCredentials({
-      a: { username: "a", password: "1", totpSecret: "JBSWY3DPEHPK3PXP" },
+      a: {
+        username: "a",
+        password: "1",
+        totpSecret: "JBSWY3DPEHPK3PXP",
+        recoveryCodes: ["r1", "r2"],
+        passkeys: [key("shared")],
+      },
       "b@two": { username: "b", via: "google" },
       stripe: { username: "bait", password: "x", canary: true },
     });
@@ -75,6 +110,8 @@ describe("credentials", () => {
     const store = {
       all: async () => [...kv].map(([name, value]) => ({ name, value })),
       put: async (name: string, value: string) => void kv.set(name, value),
+      list: async () => [...kv.keys()].map((name) => ({ name })),
+      remove: async (name: string) => kv.delete(name),
     };
     const pushed = await pushCredentials(local, store);
     expect(pushed.map((p) => p.site)).toEqual(["a", "b@two"]);
@@ -82,23 +119,13 @@ describe("credentials", () => {
       "CRED_A_USERNAME",
       "CRED_A_PASSWORD",
       "CRED_A_TOTP_SECRET",
+      "CRED_A_RECOVERY_CODES",
+      "CRED_A_PASSKEYS",
       "CRED_B__TWO_USERNAME",
       "CRED_B__TWO_VIA",
     ]);
     const other = memoryCredentials({
-      a: {
-        username: "old",
-        password: "old",
-        passkeys: [
-          {
-            rpId: "a",
-            credentialId: "k",
-            privateKey: "d",
-            signCount: 0,
-            isResidentCredential: true,
-          },
-        ],
-      },
+      a: { username: "old", password: "old", passkeys: [key("here")] },
     });
     const first = await pullCredentials(store, other);
     expect(first).toEqual({ written: ["b@two"], kept: ["a"] });
@@ -107,8 +134,37 @@ describe("credentials", () => {
     expect(second).toEqual({ written: ["a"], kept: [] });
     const a = await other.get("a");
     expect(a?.password).toBe("1");
-    expect(a?.passkeys).toHaveLength(1);
+    expect(a?.recoveryCodes).toEqual(["r1", "r2"]);
+    expect(a?.passkeys.map((p) => p.credentialId)).toEqual(["shared", "here"]);
     await expect(pullCredentials(store, other, ["nope"])).rejects.toThrow(/push it first/);
+    // Codes used up here: the next push clears them there too.
+    await local.put("a", { ...(await local.get("a")), username: "a", recoveryCodes: [] });
+    await pushCredentials(local, store, ["a"]);
+    expect(kv.has("CRED_A_RECOVERY_CODES")).toBe(false);
+    expect(kv.has("CRED_A_PASSKEYS")).toBe(true);
+  });
+  it("mirrored: a write lands here, then there; a failed copy is reported, not lost", async () => {
+    const kv = new Map<string, string>();
+    const store = {
+      all: async () => [...kv].map(([name, value]) => ({ name, value })),
+      put: async (name: string, value: string) => void kv.set(name, value),
+    };
+    const local = memoryCredentials();
+    const m = mirroredCredentials(local, store, { prefix: "APP_CRED_" });
+    await m.put("x", { username: "u", password: "p", recoveryCodes: ["c"] });
+    expect(kv.get("APP_CRED_X_PASSWORD")).toBe("p");
+    expect(kv.get("APP_CRED_X_RECOVERY_CODES")).toBe('["c"]');
+    await m.put("trap", { username: "bait", password: "x", canary: true });
+    expect([...kv.keys()].some((k) => k.includes("TRAP"))).toBe(false);
+    const failed: string[] = [];
+    const down = { all: async () => [], put: async () => Promise.reject(new Error("offline")) };
+    const m2 = mirroredCredentials(local, down, { onMirrorError: (site) => failed.push(site) });
+    await m2.put("y", { username: "u", password: "p" });
+    expect(failed).toEqual(["y"]);
+    expect((await local.get("y"))?.password).toBe("p");
+    await expect(
+      mirroredCredentials(local, down).put("z", { username: "u", password: "p" }),
+    ).rejects.toThrow(/offline/);
   });
   it("layered: first hit wins, writes go to the first store", async () => {
     const a = memoryCredentials({ s: { username: "a", password: "1" } });

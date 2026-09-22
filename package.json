@@ -1,6 +1,6 @@
 {
   "name": "credkeep",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "packageManager": "pnpm@9.15.0",
   "description": "Keep the credentials an automation signs in with: sealed at rest, shared through SSM, every use audited, expiries watched.",
   "type": "module",
