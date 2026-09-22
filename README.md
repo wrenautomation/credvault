@@ -17,6 +17,7 @@ npm install credkeep
 | `envCredentials(env, { prefix })` | The same logins read from env, for containers. Read-only. |
 | `pushCredentials` / `pullCredentials` | Move logins between a laptop and the shared store. Passkeys and recovery codes stay on the machine. |
 | `ssmEnvStore(ssm, "/app/config")` | Named values (API keys, tokens), one SSM SecureString each. |
+| `envFileStore("~/.myapp/.env")` | The same, in a local 0600 `.env`. Expiry is a comment above the line. |
 | `put(name, value, { expiresAt })` + `expiring(list, ms)` | Record when a token stops working. List what lapses soon, without decrypting anything. |
 | `fileAudit(path)` | Where each secret went, one hash-chained line per use. `verifyChain` finds any edit. |
 | `canaryStore(store)` | Reading a tripwire credential records it, tells a person, and throws. |

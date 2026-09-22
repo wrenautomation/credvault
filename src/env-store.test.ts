@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   DeleteParameterCommand,
   DescribeParametersCommand,
@@ -8,6 +11,7 @@ import {
 } from "@aws-sdk/client-ssm";
 import { describe, expect, it } from "vitest";
 import {
+  envFileStore,
   expiring,
   memoryEnvStore,
   parseDotenv,
@@ -127,5 +131,32 @@ describe("ssm store", () => {
     ]);
     expect(await store.get("TOKEN")).toBe("secret");
     await expect(store.put("bad-name", "x")).rejects.toThrow(/bad name/);
+  });
+});
+
+describe("env file store", () => {
+  it("keeps other lines, writes 0600, and records expiry as a comment above the line", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "credkeep-")), ".env");
+    writeFileSync(file, "# mine\nKEEP=1\nTOKEN=old\n");
+    const env: NodeJS.ProcessEnv = {};
+    const store = envFileStore(file, env);
+    await store.put("TOKEN", "new", { expiresAt: "2026-12-21T00:00:00Z" });
+    expect(readFileSync(file, "utf8")).toBe(
+      "# mine\nKEEP=1\n# TOKEN expires 2026-12-21T00:00:00.000Z\nTOKEN=new\n",
+    );
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(env.TOKEN).toBe("new");
+    expect(await store.list()).toEqual([
+      { name: "KEEP", updatedAt: null, expiresAt: null },
+      { name: "TOKEN", updatedAt: null, expiresAt: "2026-12-21T00:00:00.000Z" },
+    ]);
+    // A put with no expiry clears the old one, as SSM's does.
+    await store.put("TOKEN", "newer");
+    expect(readFileSync(file, "utf8")).toBe("# mine\nKEEP=1\nTOKEN=newer\n");
+    expect(await store.get("TOKEN")).toBe("newer");
+    expect(await store.remove("TOKEN")).toBe(true);
+    expect(await store.remove("TOKEN")).toBe(false);
+    expect(await store.all()).toEqual([{ name: "KEEP", value: "1" }]);
+    await expect(store.put("T", "a\nb")).rejects.toThrow(/spans lines/);
   });
 });

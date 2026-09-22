@@ -4,6 +4,9 @@
  * at rest, IAM at the door, every read in CloudTrail. Values never enter
  * argv, logs or errors.
  */
+
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import {
   DeleteParameterCommand,
   DescribeParametersCommand,
@@ -202,6 +205,75 @@ export function memoryEnvStore(initial: Record<string, string> = {}): EnvStore &
       delete values[name];
       expires.delete(name);
       return had;
+    },
+  };
+}
+
+/** The comment above a line that says when its value stops working: `# NAME expires <ISO>`. */
+const EXPIRY_LINE = /^# ([A-Z][A-Z0-9_]*) expires (\S+)$/;
+
+/**
+ * A local `.env` as a store: 0600, one line per name, other lines untouched.
+ * Expiry is a comment directly above the line, so a person reading the file
+ * sees it too. A put also sets `env[name]`, so this process sees the value.
+ */
+export function envFileStore(path: string, env: NodeJS.ProcessEnv = process.env): EnvStore {
+  const file = path.startsWith("~/") ? `${homedir()}${path.slice(1)}` : path;
+  const text = () => (existsSync(file) ? readFileSync(file, "utf8") : "");
+  const lines = () => {
+    const out = text().split("\n");
+    if (out.at(-1) === "") out.pop();
+    return out;
+  };
+  const write = (out: string[]) => {
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, out.length ? `${out.join("\n")}\n` : "", { mode: 0o600 });
+    renameSync(tmp, file);
+  };
+  /** The file without `name`'s line and expiry comment; where the line was, or -1. */
+  const without = (name: string) => {
+    const out: string[] = [];
+    let at = -1;
+    for (const l of lines()) {
+      if (EXPIRY_LINE.exec(l)?.[1] === name) continue;
+      if (l.startsWith(`${name}=`)) {
+        at = out.length;
+        continue;
+      }
+      out.push(l);
+    }
+    return { out, at };
+  };
+  return {
+    async list() {
+      const expires = new Map<string, string>();
+      for (const l of lines()) {
+        const m = EXPIRY_LINE.exec(l);
+        if (m?.[1] && m[2]) expires.set(m[1], m[2]);
+      }
+      return parseDotenv(text()).map(({ name }) => ({
+        name,
+        updatedAt: null,
+        expiresAt: expires.get(name) ?? null,
+      }));
+    },
+    all: async () => parseDotenv(text()),
+    get: async (name) => parseDotenv(text()).find((e) => e.name === name)?.value ?? null,
+    async put(name, value, o) {
+      if (!ENV_KEY.test(name)) throw new Error(`env file: bad name ${name}`);
+      if (/[\r\n]/.test(value)) throw new Error(`env file: ${name} spans lines`);
+      const { out, at } = without(name);
+      const add = [...(o?.expiresAt ? [`# ${name} ${describe(o)}`] : []), `${name}=${value}`];
+      out.splice(at < 0 ? out.length : at, 0, ...add);
+      write(out);
+      env[name] = value;
+    },
+    async remove(name) {
+      const { out, at } = without(name);
+      if (at < 0) return false;
+      write(out);
+      delete env[name];
+      return true;
     },
   };
 }

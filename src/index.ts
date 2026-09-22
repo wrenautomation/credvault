@@ -44,6 +44,7 @@ export {
   type EnvEntry,
   type EnvListing,
   type EnvStore,
+  envFileStore,
   expiring,
   memoryEnvStore,
   type PutOptions,
