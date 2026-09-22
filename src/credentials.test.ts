@@ -8,10 +8,11 @@ import {
   fileCredentials,
   layeredCredentials,
   memoryCredentials,
-  mirroredCredentials,
   pullCredentials,
   pushCredentials,
+  syncedCredentials,
 } from "./credentials.js";
+import { memoryEnvStore } from "./env-store.js";
 
 const RFC_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 
@@ -143,27 +144,50 @@ describe("credentials", () => {
     expect(kv.has("CRED_A_RECOVERY_CODES")).toBe(false);
     expect(kv.has("CRED_A_PASSKEYS")).toBe(true);
   });
-  it("mirrored: a write lands here, then there; a failed copy is reported, not lost", async () => {
-    const kv = new Map<string, string>();
-    const store = {
-      all: async () => [...kv].map(([name, value]) => ({ name, value })),
-      put: async (name: string, value: string) => void kv.set(name, value),
+  it("synced: writes land here then there; reads prefer there, refresh here, and fall back", async () => {
+    const shared = memoryEnvStore();
+    const local = memoryCredentials({ trap: { username: "bait", password: "x", canary: true } });
+    let t = 0;
+    const errors: string[] = [];
+    const s = syncedCredentials(local, shared, {
+      prefix: "APP_CRED_",
+      now: () => t,
+      onSharedError: (site, _e, during) => errors.push(`${site}:${during}`),
+    });
+    await s.put("x", { username: "u", password: "p", recoveryCodes: ["c"] });
+    expect(shared.values.APP_CRED_X_PASSWORD).toBe("p");
+    expect(shared.values.APP_CRED_X_RECOVERY_CODES).toBe('["c"]');
+    // Changed elsewhere: seen after the reuse window, and this copy follows.
+    expect((await s.get("x"))?.password).toBe("p");
+    shared.values.APP_CRED_X_PASSWORD = "new";
+    expect((await s.get("x"))?.password).toBe("p");
+    t = 60_001;
+    expect((await s.get("x"))?.password).toBe("new");
+    expect((await local.get("x"))?.password).toBe("new");
+    // Made on another machine: listed and read here with no pull.
+    shared.values.APP_CRED_Y_USERNAME = "y";
+    shared.values.APP_CRED_Y_VIA = "google";
+    expect(await s.list()).toEqual(["trap", "x", "y"]);
+    expect((await s.get("y"))?.via).toBe("google");
+    // Canaries never travel, and are read only here.
+    expect(Object.keys(shared.values).some((k) => k.includes("TRAP"))).toBe(false);
+    expect((await s.get("trap"))?.canary).toBe(true);
+    // Shared store down: reads fall back, writes are reported, nothing is lost.
+    const down = {
+      ...shared,
+      getMany: () => new Promise<Record<string, string>>(() => {}),
+      put: async () => Promise.reject(new Error("offline")),
     };
-    const local = memoryCredentials();
-    const m = mirroredCredentials(local, store, { prefix: "APP_CRED_" });
-    await m.put("x", { username: "u", password: "p", recoveryCodes: ["c"] });
-    expect(kv.get("APP_CRED_X_PASSWORD")).toBe("p");
-    expect(kv.get("APP_CRED_X_RECOVERY_CODES")).toBe('["c"]');
-    await m.put("trap", { username: "bait", password: "x", canary: true });
-    expect([...kv.keys()].some((k) => k.includes("TRAP"))).toBe(false);
-    const failed: string[] = [];
-    const down = { all: async () => [], put: async () => Promise.reject(new Error("offline")) };
-    const m2 = mirroredCredentials(local, down, { onMirrorError: (site) => failed.push(site) });
-    await m2.put("y", { username: "u", password: "p" });
-    expect(failed).toEqual(["y"]);
-    expect((await local.get("y"))?.password).toBe("p");
+    const off = syncedCredentials(local, down, {
+      timeoutMs: 5,
+      onSharedError: (site, _e, d) => errors.push(`${site}:${d}`),
+    });
+    expect((await off.get("x"))?.password).toBe("new");
+    await off.put("z", { username: "u", password: "p" });
+    expect((await local.get("z"))?.password).toBe("p");
+    expect(errors).toEqual(["x:read", "z:write"]);
     await expect(
-      mirroredCredentials(local, down).put("z", { username: "u", password: "p" }),
+      syncedCredentials(local, down).put("w", { username: "u", password: "p" }),
     ).rejects.toThrow(/offline/);
   });
   it("layered: first hit wins, writes go to the first store", async () => {

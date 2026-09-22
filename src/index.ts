@@ -37,9 +37,11 @@ export {
   fileCredentials,
   layeredCredentials,
   memoryCredentials,
-  mirroredCredentials,
   pullCredentials,
   pushCredentials,
+  type SharedCredentialStore,
+  type SyncOptions,
+  syncedCredentials,
 } from "./credentials.js";
 export {
   ENV_KEY,

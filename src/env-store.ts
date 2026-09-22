@@ -12,6 +12,7 @@ import {
   DescribeParametersCommand,
   GetParameterCommand,
   GetParametersByPathCommand,
+  GetParametersCommand,
   ParameterNotFound,
   PutParameterCommand,
   type SSMClient,
@@ -60,6 +61,8 @@ export interface EnvStore {
   /** Names, change and expiry times; never values. */
   list(): Promise<EnvListing[]>;
   get(name: string): Promise<string | null>;
+  /** The named entries that exist, in as few round trips as the store allows (SSM: ten a call). */
+  getMany(names: string[]): Promise<Record<string, string>>;
   /** Every entry, decrypted: what a pull or a deploy reads. */
   all(): Promise<EnvEntry[]>;
   put(name: string, value: string, o?: PutOptions): Promise<void>;
@@ -139,6 +142,20 @@ export function ssmEnvStore(ssm: SSMClient, prefix: string): EnvStore {
       } while (next);
       return byName(out);
     },
+    async getMany(names) {
+      const out: Record<string, string> = {};
+      for (let i = 0; i < names.length; i += 10) {
+        const r = await ssm.send(
+          new GetParametersCommand({
+            Names: names.slice(i, i + 10).map(path),
+            WithDecryption: true,
+          }),
+        );
+        for (const p of r.Parameters ?? [])
+          if (p.Name && p.Value !== undefined) out[p.Name.slice(prefix.length + 1)] = p.Value;
+      }
+      return out;
+    },
     async get(name) {
       try {
         const r = await ssm.send(
@@ -195,6 +212,8 @@ export function memoryEnvStore(initial: Record<string, string> = {}): EnvStore &
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, value]) => ({ name, value })),
     get: async (name) => values[name] ?? null,
+    getMany: async (names) =>
+      Object.fromEntries(names.flatMap((n) => (n in values ? [[n, values[n] as string]] : []))),
     async put(name, value, o) {
       if (!ENV_KEY.test(name)) throw new Error(`env store: bad name ${name}`);
       values[name] = value;
@@ -259,6 +278,12 @@ export function envFileStore(path: string, env: NodeJS.ProcessEnv = process.env)
     },
     all: async () => parseDotenv(text()),
     get: async (name) => parseDotenv(text()).find((e) => e.name === name)?.value ?? null,
+    getMany: async (names) =>
+      Object.fromEntries(
+        parseDotenv(text())
+          .filter((e) => names.includes(e.name))
+          .map((e) => [e.name, e.value]),
+      ),
     async put(name, value, o) {
       if (!ENV_KEY.test(name)) throw new Error(`env file: bad name ${name}`);
       if (/[\r\n]/.test(value)) throw new Error(`env file: ${name} spans lines`);

@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { type Cipher, isSealed, plainCipher } from "./cipher.js";
 
@@ -350,29 +351,97 @@ export function layeredCredentials(
   };
 }
 
+/** The shared store a synced credential store reads and writes (an `EnvStore` fits). */
+export interface SharedCredentialStore extends CredentialEnvStore {
+  list(): Promise<{ name: string }[]>;
+  getMany(names: string[]): Promise<Record<string, string>>;
+}
+
+export interface SyncOptions extends EnvNaming {
+  /** How long a read from the shared store is reused in this process. Default 60s. */
+  ttlMs?: number;
+  /** A shared read slower than this falls back to the local copy. Default 3s. */
+  timeoutMs?: number;
+  /** A failed shared read or copy: the local copy carried on. Default: reads fall back silently, copies throw. */
+  onSharedError?: (site: string, err: unknown, during: "read" | "write") => void;
+  now?: () => number;
+}
+
 /**
- * `local`, with every write copied to the shared env store: the file on this
- * machine becomes a cache, and a lost machine loses nothing. The local write
- * lands first; a failed copy goes to `onMirrorError` (default: throw), and
- * `pushCredentials` for that site repairs it. Canaries stay local.
+ * The shared store is the truth; `local` is the offline copy. A read asks
+ * the shared store for that site (one round trip, reused for `ttlMs`) and
+ * refreshes `local` when they differ; when the shared store is slow or
+ * down, or lacks the site, `local` answers. A write lands in `local`, then
+ * in the shared store. Canaries never leave `local`. No pull chore: a new
+ * machine's first read of a site fills its copy.
  */
-export function mirroredCredentials(
+export function syncedCredentials(
   local: CredentialStore,
-  store: CredentialEnvStore,
-  o: EnvNaming & { onMirrorError?: (site: string, err: unknown) => void } = {},
+  shared: SharedCredentialStore,
+  o: SyncOptions = {},
 ): CredentialStore {
   const naming: EnvNaming = o.prefix ? { prefix: o.prefix } : {};
+  const ttl = o.ttlMs ?? 60_000;
+  const timeout = o.timeoutMs ?? 3_000;
+  const now = o.now ?? Date.now;
+  const seen = new Map<string, { at: number; cred: Credential | null }>();
+  const withTimeout = <T>(p: Promise<T>): Promise<T> =>
+    Promise.race([
+      p,
+      new Promise<T>((_, rej) =>
+        setTimeout(
+          () => rej(new Error(`shared store: no answer in ${timeout}ms`)),
+          timeout,
+        ).unref(),
+      ),
+    ]);
+  const fromShared = async (site: string): Promise<Credential | null> => {
+    const hit = seen.get(site);
+    if (hit && now() - hit.at < ttl) return hit.cred;
+    const names = CREDENTIAL_ENV_FIELDS.map((f) => credentialEnvName(site, f, naming));
+    const cred = await envCredentials(await withTimeout(shared.getMany(names)), naming).get(site);
+    seen.set(site, { at: now(), cred });
+    return cred;
+  };
   return {
-    get: (site) => local.get(site),
-    list: () => local.list(),
+    async get(site) {
+      const here = await local.get(site);
+      if (here?.canary) return here;
+      let there: Credential | null;
+      try {
+        there = await fromShared(site);
+      } catch (err) {
+        o.onSharedError?.(site, err, "read");
+        return here;
+      }
+      if (!there) return here;
+      if (!isDeepStrictEqual(here, there)) await local.put(site, there);
+      return there;
+    },
     async put(site, cred) {
       await local.put(site, cred);
+      seen.delete(site);
       try {
-        await pushCredentials(local, store, [site], naming);
+        await pushCredentials(local, shared, [site], naming);
       } catch (err) {
-        if (!o.onMirrorError) throw err;
-        o.onMirrorError(site, err);
+        if (!o.onSharedError) throw err;
+        o.onSharedError(site, err, "write");
       }
+    },
+    async list() {
+      const here = await local.list();
+      const suffix = "_USERNAME";
+      const prefix = naming.prefix ?? DEFAULT_PREFIX;
+      let there: string[] = [];
+      try {
+        there = (await withTimeout(shared.list()))
+          .map((e) => e.name)
+          .filter((n) => n.startsWith(prefix) && n.endsWith(suffix))
+          .map((n) => siteFromEnvName(n.slice(prefix.length, -suffix.length)));
+      } catch (err) {
+        o.onSharedError?.("*", err, "read");
+      }
+      return [...new Set([...here, ...there])];
     },
   };
 }

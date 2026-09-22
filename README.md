@@ -16,7 +16,7 @@ npm install credvault
 | `keychainKey({ service })` | The seal key, kept in the macOS Keychain. Made on first use. |
 | `envCredentials(env, { prefix })` | The same logins read from env, for containers. Read-only. |
 | `pushCredentials` / `pullCredentials` | Move logins between a laptop and the shared store: every field, passkeys and recovery codes as JSON. Canaries stay put. |
-| `mirroredCredentials` | A local store whose every write is also pushed to the shared store, so the local file is only a cache. |
+| `syncedCredentials` | The shared store is the truth, the local file the offline copy: reads ask the shared store (reused 60s, 3s timeout) and refresh the file; writes land in both. No pull chore. |
 | `ssmEnvStore(ssm, "/app/config")` | Named values (API keys, tokens), one SSM SecureString each. |
 | `envFileStore("~/.myapp/.env")` | The same, in a local 0600 `.env`. Expiry is a comment above the line. |
 | `put(name, value, { expiresAt })` + `expiring(list, ms)` | Record when a token stops working. List what lapses soon, without decrypting anything. |
