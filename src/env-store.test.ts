@@ -16,6 +16,7 @@ import {
   memoryEnvStore,
   parseDotenv,
   ssmEnvStore,
+  syncedEnvStore,
   toDotenv,
   toExports,
   upsertDotenv,
@@ -158,5 +159,32 @@ describe("env file store", () => {
     expect(await store.remove("TOKEN")).toBe(false);
     expect(await store.all()).toEqual([{ name: "KEEP", value: "1" }]);
     await expect(store.put("T", "a\nb")).rejects.toThrow(/spans lines/);
+  });
+});
+
+describe("synced env store", () => {
+  it("a mint lands on both, reads prefer the local copy, and a refused shared write is loud", async () => {
+    const local = memoryEnvStore({ ONLY_HERE: "l" });
+    const shared = memoryEnvStore({ ONLY_THERE: "s", BOTH: "old" });
+    const store = syncedEnvStore(local, shared);
+    await store.put("BOTH", "new", { expiresAt: "2026-11-21T00:00:00.000Z" });
+    expect(shared.values.BOTH).toBe("new");
+    expect(await store.get("ONLY_THERE")).toBe("s");
+    expect(await store.getMany(["ONLY_HERE", "ONLY_THERE", "NONE"])).toEqual({
+      ONLY_HERE: "l",
+      ONLY_THERE: "s",
+    });
+    expect((await store.list()).map((e) => [e.name, e.expiresAt])).toEqual([
+      ["BOTH", "2026-11-21T00:00:00.000Z"],
+      ["ONLY_HERE", null],
+      ["ONLY_THERE", null],
+    ]);
+    const down = { ...shared, put: async () => Promise.reject(new Error("offline")) };
+    await expect(syncedEnvStore(local, down).put("MINTED", "t")).rejects.toThrow(
+      /MINTED kept on this machine only/,
+    );
+    expect(local.values.MINTED).toBe("t");
+    expect(await store.remove("BOTH")).toBe(true);
+    expect(shared.values.BOTH).toBeUndefined();
   });
 });

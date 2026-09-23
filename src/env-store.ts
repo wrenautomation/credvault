@@ -228,6 +228,53 @@ export function memoryEnvStore(initial: Record<string, string> = {}): EnvStore &
   };
 }
 
+/**
+ * A machine's own copy in front of the shared store: every put lands in
+ * both, so a token minted on a laptop is on every machine and the box too,
+ * and survives the laptop. The local copy is written first, so a mint is
+ * never lost to a dropped network; the shared write failing is an error
+ * all the same (the value is not durable yet). Reads prefer the local copy
+ * and fall through to the shared store for what it lacks.
+ */
+export function syncedEnvStore(local: EnvStore, shared: EnvStore): EnvStore {
+  return {
+    async list() {
+      const [mine, theirs] = await Promise.all([local.list(), shared.list()]);
+      const byName = new Map(theirs.map((e) => [e.name, e]));
+      for (const e of mine) {
+        const s = byName.get(e.name);
+        byName.set(e.name, s ? { ...s, expiresAt: s.expiresAt ?? e.expiresAt } : e);
+      }
+      return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+    },
+    get: async (name) => (await local.get(name)) ?? (await shared.get(name)),
+    async getMany(names) {
+      const mine = await local.getMany(names);
+      const rest = names.filter((n) => !(n in mine));
+      return { ...(rest.length ? await shared.getMany(rest) : {}), ...mine };
+    },
+    async all() {
+      const byName = new Map((await shared.all()).map((e) => [e.name, e]));
+      for (const e of await local.all()) byName.set(e.name, e);
+      return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+    },
+    async put(name, value, o) {
+      await local.put(name, value, o);
+      try {
+        await shared.put(name, value, o);
+      } catch (err) {
+        throw new Error(
+          `${name} kept on this machine only; the shared store refused it (${err instanceof Error ? err.message : String(err)}): push it once it answers`,
+        );
+      }
+    },
+    async remove(name) {
+      const [a, b] = await Promise.all([local.remove(name), shared.remove(name)]);
+      return a || b;
+    },
+  };
+}
+
 /** The comment above a line that says when its value stops working: `# NAME expires <ISO>`. */
 const EXPIRY_LINE = /^# ([A-Z][A-Z0-9_]*) expires (\S+)$/;
 

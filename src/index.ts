@@ -55,6 +55,7 @@ export {
   type PutOptions,
   parseDotenv,
   ssmEnvStore,
+  syncedEnvStore,
   toDotenv,
   toExports,
   upsertDotenv,

@@ -20,6 +20,7 @@ npm install credvault
 | `ssmCredentialHistory(ssm, "/app/config/history")` | Every state a credential has had, one SSM parameter per site, a version per change (SSM keeps 100). Pass it as `history` to a push or `syncedCredentials`: a push keeps what the store held, then what it writes. It never deletes. `versions` names the fields that changed, never values. |
 | `ssmEnvStore(ssm, "/app/config")` | Named values (API keys, tokens), one SSM SecureString each. |
 | `envFileStore("~/.myapp/.env")` | The same, in a local 0600 `.env`. Expiry is a comment above the line. |
+| `syncedEnvStore(local, shared)` | A machine's `.env` in front of the shared store: every put lands in both (local first, so a mint is never lost; a refused shared write still throws), reads prefer the local copy. A token minted on a laptop is on every machine. |
 | `put(name, value, { expiresAt })` + `expiring(list, ms)` | Record when a token stops working. List what lapses soon, without decrypting anything. |
 | `fileAudit(path)` | Where each secret went, one hash-chained line per use. `verifyChain` finds any edit. |
 | `canaryStore(store)` | Reading a tripwire credential records it, tells a person, and throws. |
