@@ -22,7 +22,7 @@
   },
   "scripts": {
     "build": "node scripts/clean.mjs && tsc -p tsconfig.build.json",
-    "prepare": "pnpm build",
+    "prepare": "git config core.hooksPath .githooks || true && pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run src",
     "lint": "biome check .",
