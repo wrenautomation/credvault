@@ -133,6 +133,19 @@ describe("ssm store", () => {
     expect(await store.get("TOKEN")).toBe("secret");
     await expect(store.put("bad-name", "x")).rejects.toThrow(/bad name/);
   });
+
+  it("lists once for back-to-back readers, fresh again after a write", async () => {
+    const f = fakeSsm();
+    const store = ssmEnvStore(f.ssm, "/app/config");
+    await store.put("A", "1");
+    f.sent.length = 0;
+    await Promise.all([store.list(), store.list()]);
+    await store.list();
+    expect(f.sent).toEqual(["DescribeParametersCommand"]);
+    await store.put("B", "2");
+    expect((await store.list()).map((e) => e.name)).toEqual(["A", "B"]);
+    expect(f.sent.filter((c) => c === "DescribeParametersCommand")).toHaveLength(2);
+  });
 });
 
 describe("env file store", () => {

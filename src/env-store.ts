@@ -99,28 +99,44 @@ export function ssmEnvStore(ssm: SSMClient, prefix: string): EnvStore {
   const nameOf = (p: string | undefined) => p?.slice(prefix.length + 1) ?? "";
   const byName = <T extends { name: string }>(rows: T[]) =>
     rows.sort((a, b) => a.name.localeCompare(b.name));
+  // One command lists several times (credentials, env, needs): one listing a
+  // few seconds serves them all; a write here drops it.
+  let listed: { at: number; rows: Promise<EnvListing[]> } | null = null;
+  const LIST_REUSE_MS = 5_000;
+  const listNow = async () => {
+    const out: EnvListing[] = [];
+    let next: string | undefined;
+    do {
+      const r = await patient(() =>
+        ssm.send(
+          new DescribeParametersCommand({
+            ParameterFilters: [{ Key: "Path", Option: "OneLevel", Values: [prefix] }],
+            // The default page is 10; 50 is the most SSM gives.
+            MaxResults: 50,
+            NextToken: next,
+          }),
+        ),
+      );
+      for (const p of r.Parameters ?? [])
+        out.push({
+          name: nameOf(p.Name),
+          updatedAt: p.LastModifiedDate?.toISOString() ?? null,
+          expiresAt: expiryOf(p.Description),
+        });
+      next = r.NextToken;
+    } while (next);
+    return byName(out);
+  };
   return {
     async list() {
-      const out: EnvListing[] = [];
-      let next: string | undefined;
-      do {
-        const r = await patient(() =>
-          ssm.send(
-            new DescribeParametersCommand({
-              ParameterFilters: [{ Key: "Path", Option: "OneLevel", Values: [prefix] }],
-              NextToken: next,
-            }),
-          ),
-        );
-        for (const p of r.Parameters ?? [])
-          out.push({
-            name: nameOf(p.Name),
-            updatedAt: p.LastModifiedDate?.toISOString() ?? null,
-            expiresAt: expiryOf(p.Description),
-          });
-        next = r.NextToken;
-      } while (next);
-      return byName(out);
+      if (!listed || Date.now() - listed.at > LIST_REUSE_MS) {
+        const rows = listNow();
+        listed = { at: Date.now(), rows };
+        rows.catch(() => {
+          listed = null;
+        });
+      }
+      return (await listed.rows).map((r) => ({ ...r }));
     },
     async all() {
       const out: EnvEntry[] = [];
@@ -169,6 +185,7 @@ export function ssmEnvStore(ssm: SSMClient, prefix: string): EnvStore {
     },
     async put(name, value, o) {
       if (!value) throw new Error(`env store: ${name} is empty`);
+      listed = null;
       await patient(() =>
         ssm.send(
           new PutParameterCommand({
@@ -185,6 +202,7 @@ export function ssmEnvStore(ssm: SSMClient, prefix: string): EnvStore {
       );
     },
     async remove(name) {
+      listed = null;
       try {
         await ssm.send(new DeleteParameterCommand({ Name: path(name) }));
         return true;
