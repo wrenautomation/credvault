@@ -88,6 +88,18 @@ describe("credentials", () => {
     expect(await envCredentials(env).list()).toEqual(["google@ops"]);
     expect((await envCredentials(env).get("google@ops"))?.username).toBe("o@x.co");
   });
+  it("an account named by its address comes back with its dots, not dashes", async () => {
+    const site = "google@will@wren-automation.com";
+    const entries = credentialEnv(site, {
+      username: "w",
+      password: "p",
+      recoveryCodes: [],
+      passkeys: [],
+    });
+    expect(entries[0]?.name).toBe("CRED_GOOGLE__WILL__WREN_AUTOMATION___COM_USERNAME");
+    const env = Object.fromEntries(entries.map((e) => [e.name, e.value]));
+    expect(await envCredentials(env).list()).toEqual([site]);
+  });
   it("push sends every field but a canary's; pull keeps what is here unless told, and never drops passkeys", async () => {
     const key = (id: string) => ({
       rpId: "a",

@@ -148,15 +148,20 @@ export function credentialEnvName(site: string, field: string, o: EnvNaming = {}
   return `${o.prefix ?? DEFAULT_PREFIX}${envSiteName(site)}_${field}`;
 }
 
-/** `google@ops` → `GOOGLE__OPS`, `google-admin` → `GOOGLE_ADMIN`: the account keeps its own mark so `list` can read it back. */
-const envSiteName = (site: string): string =>
+/**
+ * `google@ops` → `GOOGLE__OPS`, `google-admin` → `GOOGLE_ADMIN`,
+ * `google@will@a.com` → `GOOGLE__WILL__A___COM`: `@` and `.` keep their
+ * own marks so `list` reads the site back as it was put.
+ */
+export const envSiteName = (site: string): string =>
   site
     .replace(/@/g, "__")
+    .replace(/\./g, "___")
     .replace(/[^a-zA-Z0-9_]+/g, "_")
     .toUpperCase();
 const USERNAME = "_USERNAME";
-const siteFromEnvName = (s: string): string =>
-  s.toLowerCase().replace(/__/g, "@").replace(/_/g, "-");
+export const siteFromEnvName = (s: string): string =>
+  s.toLowerCase().replace(/___/g, ".").replace(/__/g, "@").replace(/_/g, "-");
 
 /** Fields that travel as plain strings, and the list fields that travel as JSON. */
 const STRING_FIELDS = [

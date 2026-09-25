@@ -14,7 +14,7 @@ import {
   PutParameterCommand,
   type SSMClient,
 } from "@aws-sdk/client-ssm";
-import { type Credential, credentialSchema } from "./credentials.js";
+import { type Credential, credentialSchema, envSiteName } from "./credentials.js";
 
 export interface CredentialVersion {
   version: number;
@@ -52,11 +52,7 @@ const summarize = (rows: { version: number; at: string | null; cred: Credential 
   }));
 
 /** `google@ops` → `GOOGLE__OPS`: the parameter name, same rule as the env names. */
-const paramName = (site: string) =>
-  site
-    .replace(/@/g, "__")
-    .replace(/[^a-zA-Z0-9_]+/g, "_")
-    .toUpperCase();
+const paramName = envSiteName;
 
 export function ssmCredentialHistory(ssm: SSMClient, path: string): CredentialHistory {
   const name = (site: string) => `${path}/${paramName(site)}`;
