@@ -74,6 +74,8 @@ export interface CredentialStore {
   put(site: string, cred: CredentialInput): Promise<void>;
   /** Site names only; never values. */
   list(): Promise<string[]>;
+  /** Forget a site's credential; true when there was one. Kept history stays (restorable). Absent on read-only stores. */
+  remove?(site: string): Promise<boolean>;
 }
 
 const fileSchema = z.object({ sites: z.record(z.string(), credentialSchema) });
@@ -117,6 +119,16 @@ export function fileCredentials(path: string, cipher: Cipher = plainCipher): Cre
     async list() {
       return Object.keys(read().sites);
     },
+    async remove(site) {
+      const { [site]: had, ...rest } = read().sites;
+      if (!had) return false;
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+      const tmp = `${file}.tmp`;
+      writeFileSync(tmp, cipher.seal(JSON.stringify({ sites: rest }, null, 2)), { mode: 0o600 });
+      renameSync(tmp, file);
+      cached = null;
+      return true;
+    },
   };
 }
 
@@ -131,6 +143,9 @@ export function memoryCredentials(init: Record<string, CredentialInput> = {}): C
     },
     async list() {
       return [...sites.keys()];
+    },
+    async remove(site) {
+      return sites.delete(site);
     },
   };
 }
@@ -372,6 +387,10 @@ export function layeredCredentials(
       const all = await Promise.all(stores.map((s) => s.list()));
       return [...new Set(all.flat())];
     },
+    async remove(site) {
+      const gone = await Promise.all(stores.map((s) => s.remove?.(site) ?? false));
+      return gone.some(Boolean);
+    },
   };
 }
 
@@ -469,6 +488,17 @@ export function syncedCredentials(
         o.onSharedError?.("*", err, "read");
       }
       return [...new Set([...here, ...there])];
+    },
+    async remove(site) {
+      seen.delete(site);
+      const here = (await local.remove?.(site)) ?? false;
+      if (!shared.remove) return here;
+      const names = new Set((await shared.list()).map((e) => e.name));
+      const rows = CREDENTIAL_ENV_FIELDS.map((f) => credentialEnvName(site, f, naming)).filter(
+        (n) => names.has(n),
+      );
+      for (const n of rows) await shared.remove(n);
+      return here || rows.length > 0;
     },
   };
 }

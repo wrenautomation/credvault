@@ -156,6 +156,20 @@ describe("credentials", () => {
     expect(kv.has("CRED_A_RECOVERY_CODES")).toBe(false);
     expect(kv.has("CRED_A_PASSKEYS")).toBe(true);
   });
+  it("remove forgets a site here, there, and in every layer; history is not touched", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cv-rm-"));
+    const file = fileCredentials(join(dir, "c.json"));
+    const shared = memoryEnvStore();
+    const s = syncedCredentials(file, shared, { prefix: "APP_CRED_" });
+    await s.put("google@a@x.com", { username: "a@x.com", password: "p" });
+    await s.put("keep", { username: "k", password: "p" });
+    const both = layeredCredentials([s, envCredentials({})], s);
+    expect(await both.remove?.("google@a@x.com")).toBe(true);
+    expect(await both.list()).toEqual(["keep"]);
+    expect(Object.keys(shared.values).some((k) => k.includes("__A__X___COM"))).toBe(false);
+    expect(await both.get("google@a@x.com")).toBeNull();
+    expect(await both.remove?.("google@a@x.com")).toBe(false);
+  });
   it("synced: writes land here then there; reads prefer there, refresh here, and fall back", async () => {
     const shared = memoryEnvStore();
     const local = memoryCredentials({ trap: { username: "bait", password: "x", canary: true } });
