@@ -394,29 +394,71 @@ export function layeredCredentials(
   };
 }
 
-/** The shared store a synced credential store reads and writes (an `EnvStore` fits). */
+/**
+ * The shared store a synced credential store reads and writes (an `EnvStore` fits).
+ * `list` says when each row last changed without reading a value; a store that
+ * knows (SSM) is read only when a row changed, one that does not every `ttlMs`.
+ */
 export interface SharedCredentialStore extends CredentialEnvStore {
-  list(): Promise<{ name: string }[]>;
+  list(): Promise<{ name: string; updatedAt?: string | null; version?: number }[]>;
   getMany(names: string[]): Promise<Record<string, string>>;
 }
 
+/**
+ * Which version of each site the local copy holds, so another process on this
+ * machine trusts the copy instead of reading the shared store again. See `versionsFile`.
+ */
+export interface SeenVersions {
+  get(site: string): string | null;
+  set(site: string, version: string | null): void;
+}
+
+/** `SeenVersions` in a small JSON file (names and change times only, no values). */
+export function versionsFile(path: string): SeenVersions {
+  const read = (): Record<string, string> => {
+    try {
+      return JSON.parse(readFileSync(path, "utf8")) as Record<string, string>;
+    } catch {
+      return {};
+    }
+  };
+  return {
+    get: (site) => read()[site] ?? null,
+    set(site, version) {
+      const all = read();
+      if (version === null) delete all[site];
+      else all[site] = version;
+      mkdirSync(dirname(path), { recursive: true });
+      const tmp = `${path}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(all), { mode: 0o600 });
+      renameSync(tmp, path);
+    },
+  };
+}
+
 export interface SyncOptions extends PushOptions {
-  /** How long a read from the shared store is reused in this process. Default 60s. */
+  /** A shared store that keeps no change times: how long a read is reused in this process. Default 60s. */
   ttlMs?: number;
   /** A shared read slower than this falls back to the local copy. Default 3s. */
   timeoutMs?: number;
   /** A failed shared read or copy: the local copy carried on. Default: reads fall back silently, copies throw. */
   onSharedError?: (site: string, err: unknown, during: "read" | "write") => void;
+  /** The version the local copy holds, shared across processes; default this process only. */
+  versions?: SeenVersions;
   now?: () => number;
 }
 
 /**
  * The shared store is the truth; `local` is the offline copy. A read asks
- * the shared store for that site (one round trip, reused for `ttlMs`) and
- * refreshes `local` when they differ; when the shared store is slow or
- * down, or lacks the site, `local` answers. A write lands in `local`, then
- * in the shared store. Canaries never leave `local`. No pull chore: a new
- * machine's first read of a site fills its copy.
+ * the shared store when the site's rows last changed (its listing, no
+ * value read) and reads the values only when that moved since the copy
+ * was taken: each version is read once, not once per use. Every value
+ * read from SSM costs a KMS decrypt, so this is the budget. A store with
+ * no change times is read again every `ttlMs`. The copy is refreshed when
+ * they differ; when the shared store is slow or down, or lacks the site,
+ * `local` answers. A write lands in `local`, then in the shared store.
+ * Canaries never leave `local`. No pull chore: a new machine's first read
+ * of a site fills its copy.
  */
 export function syncedCredentials(
   local: CredentialStore,
@@ -427,7 +469,8 @@ export function syncedCredentials(
   const ttl = o.ttlMs ?? 60_000;
   const timeout = o.timeoutMs ?? 3_000;
   const now = o.now ?? Date.now;
-  const seen = new Map<string, { at: number; cred: Credential | null }>();
+  const seen = new Map<string, { at: number; version: string | null; cred: Credential | null }>();
+  const versions = o.versions ?? memoryVersions();
   const withTimeout = <T>(p: Promise<T>): Promise<T> =>
     Promise.race([
       p,
@@ -438,32 +481,65 @@ export function syncedCredentials(
         ).unref(),
       ),
     ]);
-  const fromShared = async (site: string): Promise<Credential | null> => {
+  const fieldNames = (site: string) =>
+    CREDENTIAL_ENV_FIELDS.map((f) => credentialEnvName(site, f, naming));
+  /** The site's rows and when each changed, from the listing; null when the store keeps no times. */
+  const versionOf = async (site: string): Promise<string | null> => {
+    const names = new Set(fieldNames(site));
+    const rows = (await withTimeout(shared.list())).filter((r) => names.has(r.name));
+    if (rows.some((r) => !r.updatedAt)) return null;
+    return rows
+      .map((r) => `${r.name}@${r.version ?? ""}@${r.updatedAt}`)
+      .sort()
+      .join(",");
+  };
+  /** The shared copy, or `undefined`: the local one is that version already. */
+  const fromShared = async (
+    site: string,
+    here: Credential | null,
+  ): Promise<{ cred: Credential | null; version: string | null } | undefined> => {
     const hit = seen.get(site);
-    if (hit && now() - hit.at < ttl) return hit.cred;
-    const names = CREDENTIAL_ENV_FIELDS.map((f) => credentialEnvName(site, f, naming));
-    const cred = await envCredentials(await withTimeout(shared.getMany(names)), naming).get(site);
-    seen.set(site, { at: now(), cred });
-    return cred;
+    const version = await versionOf(site);
+    if (version === null) {
+      if (hit && now() - hit.at < ttl) return hit;
+    } else {
+      if (hit && hit.version === version) return hit;
+      // No rows: nothing there to read.
+      if (version === "") return { cred: null, version };
+      if (here && versions.get(site) === version) {
+        seen.set(site, { at: now(), version, cred: here });
+        return undefined;
+      }
+    }
+    const cred = await envCredentials(
+      await withTimeout(shared.getMany(fieldNames(site))),
+      naming,
+    ).get(site);
+    seen.set(site, { at: now(), version, cred });
+    return { cred, version };
   };
   return {
     async get(site) {
       const here = await local.get(site);
       if (here?.canary) return here;
-      let there: Credential | null;
+      let there: { cred: Credential | null; version: string | null } | undefined;
       try {
-        there = await fromShared(site);
+        there = await fromShared(site, here);
       } catch (err) {
         o.onSharedError?.(site, err, "read");
         return here;
       }
       if (!there) return here;
-      if (!isDeepStrictEqual(here, there)) await local.put(site, there);
-      return there;
+      if (!there.cred) return here;
+      if (!isDeepStrictEqual(here, there.cred)) await local.put(site, there.cred);
+      if (there.version) versions.set(site, there.version);
+      return there.cred;
     },
     async put(site, cred) {
       await local.put(site, cred);
+      // Until the shared store has it, the copy here is not any version there.
       seen.delete(site);
+      versions.set(site, null);
       try {
         await pushCredentials(local, shared, [site], {
           ...naming,
@@ -472,6 +548,14 @@ export function syncedCredentials(
       } catch (err) {
         if (!o.onSharedError) throw err;
         o.onSharedError(site, err, "write");
+        return;
+      }
+      // What was just written is what is there: no read back.
+      const version = await versionOf(site).catch(() => null);
+      const kept = await local.get(site);
+      if (version) {
+        seen.set(site, { at: now(), version, cred: kept });
+        versions.set(site, version);
       }
     },
     async list() {
@@ -491,6 +575,7 @@ export function syncedCredentials(
     },
     async remove(site) {
       seen.delete(site);
+      versions.set(site, null);
       const here = (await local.remove?.(site)) ?? false;
       if (!shared.remove) return here;
       const names = new Set((await shared.list()).map((e) => e.name));
@@ -500,5 +585,13 @@ export function syncedCredentials(
       for (const n of rows) await shared.remove(n);
       return here || rows.length > 0;
     },
+  };
+}
+
+function memoryVersions(): SeenVersions {
+  const m = new Map<string, string>();
+  return {
+    get: (site) => m.get(site) ?? null,
+    set: (site, v) => (v === null ? m.delete(site) : m.set(site, v)),
   };
 }

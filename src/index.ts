@@ -40,9 +40,11 @@ export {
   type PushOptions,
   pullCredentials,
   pushCredentials,
+  type SeenVersions,
   type SharedCredentialStore,
   type SyncOptions,
   syncedCredentials,
+  versionsFile,
 } from "./credentials.js";
 export {
   ENV_KEY,

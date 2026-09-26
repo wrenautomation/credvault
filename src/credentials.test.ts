@@ -11,6 +11,7 @@ import {
   pullCredentials,
   pushCredentials,
   syncedCredentials,
+  versionsFile,
 } from "./credentials.js";
 import { memoryEnvStore } from "./env-store.js";
 
@@ -205,6 +206,7 @@ describe("credentials", () => {
       put: async () => Promise.reject(new Error("offline")),
     };
     const off = syncedCredentials(local, down, {
+      prefix: "APP_CRED_",
       timeoutMs: 5,
       onSharedError: (site, _e, d) => errors.push(`${site}:${d}`),
     });
@@ -215,6 +217,44 @@ describe("credentials", () => {
     await expect(
       syncedCredentials(local, down).put("w", { username: "u", password: "p" }),
     ).rejects.toThrow(/offline/);
+  });
+  it("synced: a site is read from the shared store once per version, here or in another process", async () => {
+    const shared = memoryEnvStore();
+    let n = 0;
+    const read: string[] = [];
+    // A store that keeps change times, as SSM does.
+    const timed = {
+      ...shared,
+      list: async () => (await shared.list()).map((e) => ({ ...e, updatedAt: `t${n}` })),
+      getMany: async (names: string[]) => {
+        read.push(names[0] ?? "");
+        return shared.getMany(names);
+      },
+      put: async (name: string, value: string) => {
+        n++;
+        await shared.put(name, value);
+      },
+    };
+    const dir = mkdtempSync(join(tmpdir(), "cv-ver-"));
+    const versions = versionsFile(join(dir, "versions.json"));
+    const local = memoryCredentials();
+    const a = syncedCredentials(local, timed, { prefix: "APP_CRED_", versions });
+    await a.put("x", { username: "u", password: "p" });
+    for (let i = 0; i < 5; i++) expect((await a.get("x"))?.password).toBe("p");
+    // Another process on this machine: same copy, same version, no read.
+    const b = syncedCredentials(local, timed, { prefix: "APP_CRED_", versions });
+    expect((await b.get("x"))?.password).toBe("p");
+    expect(read).toEqual([]);
+    // Changed elsewhere: read once, then served from here again.
+    shared.values.APP_CRED_X_PASSWORD = "new";
+    n++;
+    expect((await b.get("x"))?.password).toBe("new");
+    expect((await b.get("x"))?.password).toBe("new");
+    expect((await a.get("x"))?.password).toBe("new");
+    expect(read).toEqual(["APP_CRED_X_USERNAME"]);
+    // Nothing there: no read at all.
+    expect(await a.get("none")).toBeNull();
+    expect(read).toHaveLength(1);
   });
   it("layered: first hit wins, writes go to the first store", async () => {
     const a = memoryCredentials({ s: { username: "a", password: "1" } });

@@ -10,8 +10,6 @@ import { homedir } from "node:os";
 import {
   DeleteParameterCommand,
   DescribeParametersCommand,
-  GetParameterCommand,
-  GetParametersByPathCommand,
   GetParametersCommand,
   ParameterNotFound,
   PutParameterCommand,
@@ -48,6 +46,8 @@ export interface EnvListing {
   name: string;
   /** When the value last changed. */
   updatedAt: string | null;
+  /** The store's own count of changes (SSM's parameter version), when it keeps one. */
+  version?: number;
   /** When the value stops working (a token's expiry), if whoever stored it knew. */
   expiresAt: string | null;
 }
@@ -121,71 +121,78 @@ export function ssmEnvStore(ssm: SSMClient, prefix: string): EnvStore {
         out.push({
           name: nameOf(p.Name),
           updatedAt: p.LastModifiedDate?.toISOString() ?? null,
+          ...(p.Version ? { version: p.Version } : {}),
           expiresAt: expiryOf(p.Description),
         });
       next = r.NextToken;
     } while (next);
     return byName(out);
   };
+  const list = async () => {
+    if (!listed || Date.now() - listed.at > LIST_REUSE_MS) {
+      const rows = listNow();
+      listed = { at: Date.now(), rows };
+      rows.catch(() => {
+        listed = null;
+      });
+    }
+    return (await listed.rows).map((r) => ({ ...r }));
+  };
+  // Every SecureString read is a KMS decrypt, and KMS is billed per request.
+  // So each value read is kept with the version it was read at, and read
+  // again only once the listing (which reads no value) shows it changed.
+  const known = new Map<string, { stamp: string; value: string }>();
+  const stampOf = (e: EnvListing) => `${e.version ?? ""}@${e.updatedAt ?? ""}`;
+  const readNow = async (names: string[]) => {
+    const out: Record<string, string> = {};
+    for (let i = 0; i < names.length; i += 10) {
+      const r = await ssm.send(
+        new GetParametersCommand({
+          Names: names.slice(i, i + 10).map(path),
+          WithDecryption: true,
+        }),
+      );
+      for (const p of r.Parameters ?? [])
+        if (p.Name && p.Value !== undefined) out[p.Name.slice(prefix.length + 1)] = p.Value;
+    }
+    return out;
+  };
+  const read = async (names: string[], rows: EnvListing[]) => {
+    const stamps = new Map(rows.map((e) => [e.name, stampOf(e)]));
+    const out: Record<string, string> = {};
+    const need: string[] = [];
+    for (const n of names) {
+      const k = known.get(n);
+      if (k && k.stamp === stamps.get(n)) out[n] = k.value;
+      else need.push(n);
+    }
+    if (need.length)
+      for (const [n, v] of Object.entries(await readNow(need))) {
+        out[n] = v;
+        const stamp = stamps.get(n);
+        if (stamp) known.set(n, { stamp, value: v });
+      }
+    return out;
+  };
+  const getMany = async (names: string[]) => read(names, await list().catch(() => []));
   return {
-    async list() {
-      if (!listed || Date.now() - listed.at > LIST_REUSE_MS) {
-        const rows = listNow();
-        listed = { at: Date.now(), rows };
-        rows.catch(() => {
-          listed = null;
-        });
-      }
-      return (await listed.rows).map((r) => ({ ...r }));
-    },
+    list,
     async all() {
-      const out: EnvEntry[] = [];
-      let next: string | undefined;
-      do {
-        const r = await patient(() =>
-          ssm.send(
-            new GetParametersByPathCommand({
-              Path: prefix,
-              Recursive: false,
-              WithDecryption: true,
-              NextToken: next,
-            }),
-          ),
-        );
-        for (const p of r.Parameters ?? [])
-          out.push({ name: nameOf(p.Name), value: p.Value ?? "" });
-        next = r.NextToken;
-      } while (next);
-      return byName(out);
+      // Fresh, not the reused listing: everything means everything there now.
+      const rows = await listNow();
+      listed = { at: Date.now(), rows: Promise.resolve(rows) };
+      const values = await read(
+        rows.map((e) => e.name),
+        rows,
+      );
+      return byName(Object.entries(values).map(([name, value]) => ({ name, value })));
     },
-    async getMany(names) {
-      const out: Record<string, string> = {};
-      for (let i = 0; i < names.length; i += 10) {
-        const r = await ssm.send(
-          new GetParametersCommand({
-            Names: names.slice(i, i + 10).map(path),
-            WithDecryption: true,
-          }),
-        );
-        for (const p of r.Parameters ?? [])
-          if (p.Name && p.Value !== undefined) out[p.Name.slice(prefix.length + 1)] = p.Value;
-      }
-      return out;
-    },
-    async get(name) {
-      try {
-        const r = await ssm.send(
-          new GetParameterCommand({ Name: path(name), WithDecryption: true }),
-        );
-        return r.Parameter?.Value ?? null;
-      } catch (err) {
-        if (err instanceof ParameterNotFound) return null;
-        throw err;
-      }
-    },
+    getMany,
+    get: async (name) => (await getMany([name]))[name] ?? null,
     async put(name, value, o) {
       if (!value) throw new Error(`env store: ${name} is empty`);
       listed = null;
+      known.delete(name);
       await patient(() =>
         ssm.send(
           new PutParameterCommand({
@@ -203,6 +210,7 @@ export function ssmEnvStore(ssm: SSMClient, prefix: string): EnvStore {
     },
     async remove(name) {
       listed = null;
+      known.delete(name);
       try {
         await ssm.send(new DeleteParameterCommand({ Name: path(name) }));
         return true;

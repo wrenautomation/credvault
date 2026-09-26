@@ -16,9 +16,9 @@ npm install credvault
 | `keychainKey({ service })` | The seal key, kept in the macOS Keychain. Made on first use. |
 | `envCredentials(env, { prefix })` | The same logins read from env, for containers. Read-only. |
 | `pushCredentials` / `pullCredentials` | Move logins between a laptop and the shared store: every field, passkeys and recovery codes as JSON. Canaries stay put. |
-| `syncedCredentials` | The shared store is the truth, the local file the offline copy: reads ask the shared store (reused 60s, 3s timeout) and refresh the file; writes land in both. No pull chore. |
+| `syncedCredentials` | The shared store is the truth, the local file the offline copy: a read checks the listing (no value read) and reads the values only when the site changed; pass `versions: versionsFile(path)` so other processes on the machine trust the copy too. A store with no change times is re-read every 60s. 3s timeout; writes land in both. No pull chore. |
 | `ssmCredentialHistory(ssm, "/app/config/history")` | Every state a credential has had, one SSM parameter per site, a version per change (SSM keeps 100). Pass it as `history` to a push or `syncedCredentials`: a push keeps what the store held, then what it writes. It never deletes. `versions` names the fields that changed, never values. |
-| `ssmEnvStore(ssm, "/app/config")` | Named values (API keys, tokens), one SSM SecureString each. |
+| `ssmEnvStore(ssm, "/app/config")` | Named values (API keys, tokens), one SSM SecureString each. Each value is decrypted once per version per process (every read is a KMS request, billed past 20k a month). |
 | `envFileStore("~/.myapp/.env")` | The same, in a local 0600 `.env`. Expiry is a comment above the line. |
 | `syncedEnvStore(local, shared)` | A machine's `.env` in front of the shared store: every put lands in both (local first, so a mint is never lost; a refused shared write still throws), reads prefer the local copy. A token minted on a laptop is on every machine. |
 | `put(name, value, { expiresAt })` + `expiring(list, ms)` | Record when a token stops working. List what lapses soon, without decrypting anything. |

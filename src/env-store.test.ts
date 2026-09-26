@@ -4,8 +4,7 @@ import { join } from "node:path";
 import {
   DeleteParameterCommand,
   DescribeParametersCommand,
-  GetParameterCommand,
-  GetParametersByPathCommand,
+  GetParametersCommand,
   PutParameterCommand,
   type SSMClient,
 } from "@aws-sdk/client-ssm";
@@ -80,35 +79,48 @@ describe("expiry", () => {
 });
 
 describe("ssm store", () => {
-  /** SSM as a map, speaking the five commands the store sends. */
+  /** SSM as a map, speaking the four commands the store sends; `decrypted` counts values read (KMS decrypts). */
   const fakeSsm = () => {
-    const params = new Map<string, { value: string; description: string }>();
+    const params = new Map<string, { value: string; description: string; version: number }>();
     const sent: string[] = [];
+    const decrypted: string[] = [];
     const send = async (cmd: unknown) => {
       sent.push((cmd as object).constructor.name);
       const input = (cmd as { input: Record<string, unknown> }).input;
       if (cmd instanceof PutParameterCommand) {
-        params.set(input.Name as string, {
+        const name = input.Name as string;
+        params.set(name, {
           value: input.Value as string,
           description: input.Description as string,
+          version: (params.get(name)?.version ?? 0) + 1,
         });
         return {};
       }
       if (cmd instanceof DescribeParametersCommand)
         return {
-          Parameters: [...params].map(([Name, p]) => ({ Name, Description: p.description })),
+          Parameters: [...params].map(([Name, p]) => ({
+            Name,
+            Description: p.description,
+            Version: p.version,
+            LastModifiedDate: new Date(Date.UTC(2026, 8, 26, 0, 0, p.version)),
+          })),
         };
-      if (cmd instanceof GetParametersByPathCommand)
-        return { Parameters: [...params].map(([Name, p]) => ({ Name, Value: p.value })) };
-      if (cmd instanceof GetParameterCommand)
-        return { Parameter: { Value: params.get(input.Name as string)?.value } };
+      if (cmd instanceof GetParametersCommand)
+        return {
+          Parameters: (input.Names as string[]).flatMap((Name) => {
+            const p = params.get(Name);
+            if (!p) return [];
+            decrypted.push(Name.split("/").pop() ?? "");
+            return [{ Name, Value: p.value }];
+          }),
+        };
       if (cmd instanceof DeleteParameterCommand) {
         params.delete(input.Name as string);
         return {};
       }
       throw new Error("unexpected command");
     };
-    return { ssm: { send } as unknown as SSMClient, params, sent };
+    return { ssm: { send } as unknown as SSMClient, params, sent, decrypted };
   };
 
   it("lists names and expiry without decrypting, and reads values only on all/get", async () => {
@@ -132,6 +144,30 @@ describe("ssm store", () => {
     ]);
     expect(await store.get("TOKEN")).toBe("secret");
     await expect(store.put("bad-name", "x")).rejects.toThrow(/bad name/);
+  });
+
+  it("reads each version of a value once: later reads of it decrypt nothing", async () => {
+    const f = fakeSsm();
+    const store = ssmEnvStore(f.ssm, "/app/config");
+    await store.put("A", "1");
+    await store.put("B", "2");
+    expect(await store.get("A")).toBe("1");
+    expect(await store.getMany(["A", "B", "NONE"])).toEqual({ A: "1", B: "2" });
+    expect(await store.all()).toEqual([
+      { name: "A", value: "1" },
+      { name: "B", value: "2" },
+    ]);
+    expect(await store.get("A")).toBe("1");
+    expect(f.decrypted).toEqual(["A", "B"]);
+    // Changed from elsewhere (another machine): seen once the listing is, read once.
+    const other = ssmEnvStore(f.ssm, "/app/config");
+    await other.put("A", "new");
+    expect((await store.all()).find((e) => e.name === "A")?.value).toBe("new");
+    expect(await store.get("A")).toBe("new");
+    expect(f.decrypted).toEqual(["A", "B", "A"]);
+    // A write here is not read back from a stale copy.
+    await store.put("B", "3");
+    expect(await store.get("B")).toBe("3");
   });
 
   it("lists once for back-to-back readers, fresh again after a write", async () => {
