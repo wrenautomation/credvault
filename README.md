@@ -49,4 +49,4 @@ const soon = expiring(await keys.list(), 14 * 86_400_000);
 - A wrong write is undone from history. A push that cannot keep the old state writes nothing.
 - Each app has its own Keychain item, SSM path and env prefix, so two apps never share a secret by accident.
 
-MIT
+PolyForm Strict 1.0.0: read and personal use only; no commercial use, changes or redistribution. See LICENSE.md.
