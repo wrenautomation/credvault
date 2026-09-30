@@ -26,6 +26,7 @@ npm install credvault
 | `canaryStore(store)` | Reading a tripwire credential records it, tells a person, and throws. |
 | `totp(seed)` | The current code from a TOTP seed. `findTotpSecret(pageText)` finds the seed on an enrollment page. |
 | `newPassword()` | 24 characters, every class, no look-alikes. |
+| `ownerCredentials({ roleArn, owner, region })` | One app, many owners: an AWS session tagged `owner=<owner>` from one shared role, renewed before it ends. `ownerSsmClient` wraps it; `ownerPath("/myapp", "acme")` = `/myapp/owners/acme`. |
 
 ## Example
 
@@ -42,11 +43,34 @@ await keys.put("NPM_TOKEN", token, { expiresAt: "2026-12-21T00:00:00Z" });
 const soon = expiring(await keys.list(), 14 * 86_400_000);
 ```
 
+## Owners
+
+One role serves every owner. Its policy names the session tag, so a session
+reaches only its owner's path, and a session without the tag reaches nothing:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath", "ssm:PutParameter", "ssm:DeleteParameter"],
+  "Resource": [
+    "arn:aws:ssm:*:*:parameter/myapp/owners/${aws:PrincipalTag/owner}",
+    "arn:aws:ssm:*:*:parameter/myapp/owners/${aws:PrincipalTag/owner}/*"
+  ]
+}
+```
+
+Its trust policy allows `sts:AssumeRole` and `sts:TagSession`, with the
+`owner` tag required. Add `kms:Decrypt`/`Encrypt` on the SSM key, and
+`ssm:DescribeParameters` on `*` (it cannot be scoped: names show, values
+never). `ownerSsmClient({ roleArn, owner: "acme", region })` then hands
+`ssmEnvStore(ssm, ownerPath("/myapp", "acme") + "/config")` a client that
+cannot read another owner.
+
 ## Rules it keeps
 
 - Values never go into argv, logs or error messages. `list` returns names only.
 - A sealed file opened without its key fails loudly. It never fails as a parse error.
 - A wrong write is undone from history. A push that cannot keep the old state writes nothing.
-- Each app has its own Keychain item, SSM path and env prefix, so two apps never share a secret by accident.
+- Each app has its own Keychain item, SSM path and env prefix, so two apps never share a secret by accident. Each owner of an app has its own path and an AWS session that reaches only it.
 
 PolyForm Strict 1.0.0: read and personal use only; no commercial use, changes or redistribution. See LICENSE.md.

@@ -69,6 +69,15 @@ export {
   memoryCredentialHistory,
   ssmCredentialHistory,
 } from "./history.js";
+export {
+  type AwsCredentials,
+  checkOwner,
+  OWNER_NAME,
+  type OwnerSession,
+  ownerCredentials,
+  ownerPath,
+  ownerSsmClient,
+} from "./owner.js";
 export { newPassword } from "./passwords.js";
 export {
   envSecrets,
