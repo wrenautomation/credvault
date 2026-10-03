@@ -40,6 +40,7 @@ export {
   type PushOptions,
   pullCredentials,
   pushCredentials,
+  ROLE_NAME,
   type SeenVersions,
   type SharedCredentialStore,
   type SyncOptions,

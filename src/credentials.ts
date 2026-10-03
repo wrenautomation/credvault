@@ -14,6 +14,9 @@ import type { CredentialHistory } from "./history.js";
 
 const expandHome = (p: string) => (p.startsWith("~/") ? `${homedir()}${p.slice(1)}` : p);
 
+/** A role name: lowercase, starts with a letter; never an `@`, so it cannot pass for a username. */
+export const ROLE_NAME = /^[a-z][a-z0-9.-]{0,31}$/;
+
 export const credentialSchema = z
   .object({
     username: z.string().min(1),
@@ -63,6 +66,14 @@ export const credentialSchema = z
     url: z.string().url().optional(),
     /** When the account was made; a minted credential without it is a signup still owed. */
     madeAt: z.string().datetime().optional(),
+    /**
+     * What the account is for on its site (`main`, `alt`, `brand`): names a
+     * caller asks for instead of the username. One account per role per
+     * site is the caller's rule to keep; the store only holds them.
+     */
+    roles: z
+      .array(z.string().regex(ROLE_NAME, "a role is a lowercase word (a-z, 0-9, . and -)"))
+      .optional(),
   })
   .refine((c) => c.password || c.via, { message: "a credential has a password or a via provider" });
 
@@ -192,6 +203,7 @@ const STRING_FIELDS = [
 const JSON_FIELDS = [
   ["RECOVERY_CODES", "recoveryCodes"],
   ["PASSKEYS", "passkeys"],
+  ["ROLES", "roles"],
 ] as const;
 /** Every env field a credential can use: what a push clears when the credential no longer has it. */
 export const CREDENTIAL_ENV_FIELDS: readonly string[] = [...STRING_FIELDS, ...JSON_FIELDS].map(
@@ -212,7 +224,7 @@ export function credentialEnv(
     ...STRING_FIELDS.map(([f, k]): [string, string | undefined] => [f, cred[k]]),
     ...JSON_FIELDS.map(([f, k]): [string, string | undefined] => [
       f,
-      cred[k].length ? JSON.stringify(cred[k]) : undefined,
+      cred[k]?.length ? JSON.stringify(cred[k]) : undefined,
     ]),
   ];
   return fields

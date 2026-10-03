@@ -117,7 +117,7 @@ describe("credentials", () => {
         recoveryCodes: ["r1", "r2"],
         passkeys: [key("shared")],
       },
-      "b@two": { username: "b", via: "google" },
+      "b@two": { username: "b", via: "google", roles: ["main"] },
       stripe: { username: "bait", password: "x", canary: true },
     });
     const kv = new Map<string, string>();
@@ -137,12 +137,14 @@ describe("credentials", () => {
       "CRED_A_PASSKEYS",
       "CRED_B__TWO_USERNAME",
       "CRED_B__TWO_VIA",
+      "CRED_B__TWO_ROLES",
     ]);
     const other = memoryCredentials({
       a: { username: "old", password: "old", passkeys: [key("here")] },
     });
     const first = await pullCredentials(store, other);
     expect(first).toEqual({ written: ["b@two"], kept: ["a"] });
+    expect((await other.get("b@two"))?.roles).toEqual(["main"]);
     expect((await other.get("a"))?.password).toBe("old");
     const second = await pullCredentials(store, other, ["a"], { overwrite: true });
     expect(second).toEqual({ written: ["a"], kept: [] });
