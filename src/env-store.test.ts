@@ -13,11 +13,14 @@ import {
   envFileStore,
   expiring,
   memoryEnvStore,
+  memoryUnshared,
+  type PutOptions,
   parseDotenv,
   ssmEnvStore,
   syncedEnvStore,
   toDotenv,
   toExports,
+  unsharedFile,
   upsertDotenv,
 } from "./env-store.js";
 
@@ -233,7 +236,47 @@ describe("synced env store", () => {
       /MINTED kept on this machine only/,
     );
     expect(local.values.MINTED).toBe("t");
+
+    // The refused name is remembered: the next put that reaches the store sends it too.
+    const unshared = memoryUnshared();
+    let up = false;
+    const flaky = {
+      ...shared,
+      put: (n: string, v: string, o?: PutOptions) =>
+        up ? shared.put(n, v, o) : Promise.reject(new Error("offline")),
+    };
+    const synced = syncedEnvStore(local, flaky, { unshared });
+    await local.put("MINTED", "t", { expiresAt: "2026-12-01T00:00:00.000Z" });
+    await expect(
+      synced.put("MINTED", "t", { expiresAt: "2026-12-01T00:00:00.000Z" }),
+    ).rejects.toThrow();
+    expect(unshared.names()).toEqual(["MINTED"]);
+    up = true;
+    await synced.put("OTHER", "o");
+    expect(shared.values.MINTED).toBe("t");
+    expect(shared.values.OTHER).toBe("o");
+    expect(unshared.names()).toEqual([]);
+    up = false;
+    await expect(synced.put("LATER", "x")).rejects.toThrow();
+    up = true;
+    expect(await synced.share()).toEqual(["LATER"]);
+    expect(await synced.share()).toEqual([]);
     expect(await store.remove("BOTH")).toBe(true);
     expect(shared.values.BOTH).toBeUndefined();
+  });
+});
+
+describe("unshared file", () => {
+  it("keeps names across instances, never values", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unshared-"));
+    const path = join(dir, "unshared.json");
+    unsharedFile(path).add("A");
+    unsharedFile(path).add("B");
+    unsharedFile(path).add("A");
+    expect(unsharedFile(path).names()).toEqual(["A", "B"]);
+    unsharedFile(path).drop("A");
+    expect(readFileSync(path, "utf8")).toBe('["B"]\n');
+    writeFileSync(path, "not json");
+    expect(unsharedFile(path).names()).toEqual([]);
   });
 });

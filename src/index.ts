@@ -55,12 +55,16 @@ export {
   envFileStore,
   expiring,
   memoryEnvStore,
+  memoryUnshared,
   type PutOptions,
   parseDotenv,
+  type SyncedEnvStore,
   ssmEnvStore,
   syncedEnvStore,
   toDotenv,
   toExports,
+  type Unshared,
+  unsharedFile,
   upsertDotenv,
 } from "./env-store.js";
 export {

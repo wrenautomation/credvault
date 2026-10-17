@@ -262,8 +262,33 @@ export function memoryEnvStore(initial: Record<string, string> = {}): EnvStore &
  * all the same (the value is not durable yet). Reads prefer the local copy
  * and fall through to the shared store for what it lacks.
  */
-export function syncedEnvStore(local: EnvStore, shared: EnvStore): EnvStore {
+export function syncedEnvStore(
+  local: EnvStore,
+  shared: EnvStore,
+  o: { unshared?: Unshared } = {},
+): SyncedEnvStore {
+  const unshared = o.unshared ?? memoryUnshared();
+  /** Each name whose last put stayed here: its local value, with its expiry, into the shared store. */
+  async function share(): Promise<string[]> {
+    const names = unshared.names();
+    if (!names.length) return [];
+    const [values, listed] = await Promise.all([local.getMany(names), local.list()]);
+    const expiry = new Map(listed.map((e) => [e.name, e.expiresAt]));
+    const sent: string[] = [];
+    for (const name of names) {
+      const value = values[name];
+      // Gone from this machine since: nothing is left to share.
+      if (value !== undefined) {
+        const expiresAt = expiry.get(name) ?? undefined;
+        await shared.put(name, value, expiresAt ? { expiresAt } : {});
+        sent.push(name);
+      }
+      unshared.drop(name);
+    }
+    return sent;
+  }
   return {
+    share,
     async list() {
       const [mine, theirs] = await Promise.all([local.list(), shared.list()]);
       const byName = new Map(theirs.map((e) => [e.name, e]));
@@ -286,17 +311,77 @@ export function syncedEnvStore(local: EnvStore, shared: EnvStore): EnvStore {
     },
     async put(name, value, o) {
       await local.put(name, value, o);
+      // Remembered before the shared write: a crash in between still shares it later.
+      unshared.add(name);
       try {
         await shared.put(name, value, o);
+        unshared.drop(name);
       } catch (err) {
         throw new Error(
-          `${name} kept on this machine only; the shared store refused it (${err instanceof Error ? err.message : String(err)}): push it once it answers`,
+          `${name} kept on this machine only; the shared store refused it (${err instanceof Error ? err.message : String(err)}): the next put or share() sends it`,
         );
       }
+      // The shared store answers again: what an earlier put left here goes too.
+      await share().catch(() => undefined);
     },
     async remove(name) {
       const [a, b] = await Promise.all([local.remove(name), shared.remove(name)]);
+      unshared.drop(name);
       return a || b;
+    },
+  };
+}
+
+/** A synced store, and the one call that sends what a refused shared write left on this machine. */
+export interface SyncedEnvStore extends EnvStore {
+  /** Put every unshared name's local value into the shared store; answers the names sent. */
+  share(): Promise<string[]>;
+}
+
+/** Names whose last put reached only this machine. Names only, never values. */
+export interface Unshared {
+  names(): string[];
+  add(name: string): void;
+  drop(name: string): void;
+}
+
+export function memoryUnshared(): Unshared {
+  const set = new Set<string>();
+  return {
+    names: () => [...set].sort(),
+    add: (n) => void set.add(n),
+    drop: (n) => void set.delete(n),
+  };
+}
+
+/**
+ * Unshared names in a file (a JSON array, 0600), so they outlive the process: a token minted while
+ * the shared store refused writes is sent by the next process that reaches it.
+ */
+export function unsharedFile(path: string): Unshared {
+  const read = (): string[] => {
+    if (!existsSync(path)) return [];
+    try {
+      const v: unknown = JSON.parse(readFileSync(path, "utf8"));
+      return Array.isArray(v) ? v.filter((n): n is string => typeof n === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const write = (names: string[]) => {
+    const tmp = `${path}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify([...new Set(names)].sort())}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+  };
+  return {
+    names: read,
+    add: (n) => {
+      const now = read();
+      if (!now.includes(n)) write([...now, n]);
+    },
+    drop: (n) => {
+      const now = read();
+      if (now.includes(n)) write(now.filter((x) => x !== n));
     },
   };
 }
