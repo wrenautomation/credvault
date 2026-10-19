@@ -7,16 +7,22 @@ import { chainedFile } from "./chain.js";
 
 export interface SecretUse {
   at: string;
-  /** The credential's store name (`google`, `google@will`). */
+  /** The credential's store name (`google`, `google@will`); for an API key, its address (`exa@env-1`). */
   credential: string;
   field: "password" | "previousPassword" | "secret";
-  /** The site the session is on. */
+  /** The site the session is on; for an API key, the vendor. */
   site: string;
-  /** The page, without its query (tokens ride in queries). */
+  /** The page, without its query (tokens ride in queries); for an API key, the endpoint. */
   url: string;
   /** Who used it: `login`, a flow name. */
   by: string;
   allowed: boolean;
+  /** Whose credential it was: `wren` or an owner name. */
+  owner?: string;
+  /** For an API key: its `keyId`, so a line names the key without the value. */
+  keyId?: string;
+  /** Why it was used, in a few words. */
+  reason?: string;
 }
 
 export interface SecretAudit {

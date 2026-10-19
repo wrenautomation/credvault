@@ -21,8 +21,9 @@ export interface Chained {
 /** Hash of one row: `prev`, then the row's fields in key order, so the value is stable however it was built. */
 export function rowHash(prev: string, row: object): string {
   const fields = row as Record<string, unknown>;
+  // An undefined field is not in the JSON line, so it is not in the hash either.
   const keys = Object.keys(fields)
-    .filter((k) => k !== "prev" && k !== "hash")
+    .filter((k) => k !== "prev" && k !== "hash" && fields[k] !== undefined)
     .sort();
   const h = createHash("sha256").update(prev);
   for (const k of keys) h.update("\0").update(k).update("=").update(JSON.stringify(fields[k]));

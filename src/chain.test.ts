@@ -21,6 +21,15 @@ describe("chained ledger", () => {
     expect((await f.recent(2)).map((r) => r.n)).toEqual([2, 3]);
   });
 
+  it("a field that is undefined is not in the hash, as it is not in the line", async () => {
+    const path = await fresh();
+    const f = chainedFile<{ n: number; why?: string | undefined }>(path);
+    await f.append({ n: 1, why: undefined });
+    await f.append({ n: 2, why: "x" });
+    expect(rowHash("p", { n: 1, why: undefined })).toBe(rowHash("p", { n: 1 }));
+    expect(await verifyChain(path)).toMatchObject({ rows: 2, ok: true });
+  });
+
   it("hashes are stable under key order", () => {
     expect(rowHash("p", { a: 1, b: "x" })).toBe(rowHash("p", { b: "x", a: 1 }));
     expect(rowHash("p", { a: 1 })).not.toBe(rowHash("q", { a: 1 }));
